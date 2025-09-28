@@ -1,3 +1,5 @@
 build
 flopscope.egg-info
 python/flopscope/_core.cp313-win_amd64.pyd
+python/flopscope/__pycache__/api.cpython-313.pyc
+python/flopscope/__pycache__/__init__.cpython-313.pyc
