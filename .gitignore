@@ -1,6 +1,4 @@
 build
-flopscope.egg-info
-python/flopscope/_core.cp313-win_amd64.pyd
-python/flopscope/__pycache__
+flop_counter/__pycache__
 prompts.txt
 .vscode

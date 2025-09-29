@@ -6,9 +6,9 @@ Esta versión funciona sin dependencias de C++ como fallback.
 import functools
 import threading
 import time
+import sys
 from typing import List, Optional, Any, Dict, Tuple
 from contextlib import contextmanager
-import sys
 
 class OperationInfo:
     """Información sobre una operación registrada"""
@@ -283,19 +283,24 @@ class FLOPCounterPython:
         self._interceptors_active = True
         
         # NumPy
-        self._intercept_numpy()
+        try:
+            self._intercept_numpy()
+        except Exception as e:
+            import warnings
+            warnings.warn(f"Failed to intercept NumPy: {e}", ImportWarning)
         
         # PyTorch
         try:
             self._intercept_torch()
-        except ImportError:
-            pass
+        except Exception:
+            pass  # PyTorch no disponible o error al interceptar
         
-        # TensorFlow
+        # TensorFlow - solo interceptar si ya está importado
         try:
-            self._intercept_tensorflow()
-        except ImportError:
-            pass
+            if 'tensorflow' in sys.modules:
+                self._intercept_tensorflow()
+        except Exception:
+            pass  # TensorFlow no disponible o error al interceptar
     
     def _deactivate_interceptors(self):
         """Desactiva los interceptores"""
@@ -336,20 +341,62 @@ class FLOPCounterPython:
             if 'numpy' not in self._original_functions:
                 self._original_functions['numpy'] = {}
             
-            # Funciones a interceptar
-            functions_to_intercept = [
-                'matmul', 'dot', 'add', 'subtract', 'multiply', 'divide',
-                'power', 'sqrt', 'exp', 'log', 'sin', 'cos', 'tanh',
-                'sum', 'mean', 'max', 'min', 'std', 'var'
+            # Funciones de álgebra lineal (prioridad alta - siempre interceptar)
+            critical_functions = ['matmul', 'dot', 'inner', 'outer', 'tensordot', 'vdot', 'einsum']
+            
+            for func_name in critical_functions:
+                if hasattr(np, func_name):
+                    try:
+                        original_func = getattr(np, func_name)
+                        self._original_functions['numpy'][func_name] = original_func
+                        wrapped_func = self._create_numpy_wrapper(func_name, original_func)
+                        setattr(np, func_name, wrapped_func)
+                    except Exception as e:
+                        import warnings
+                        warnings.warn(f"Failed to intercept np.{func_name}: {e}", ImportWarning)
+            
+            # Operaciones de reducción (estas son funciones, no ufuncs generalmente)
+            reduction_functions = [
+                'sum', 'mean', 'std', 'var', 'max', 'min',
+                'prod', 'median', 'percentile', 'average',
+                'nansum', 'nanmean', 'nanstd', 'nanvar',
+                'nanmax', 'nanmin', 'nanmedian'
             ]
             
-            for func_name in functions_to_intercept:
+            for func_name in reduction_functions:
                 if hasattr(np, func_name):
-                    original_func = getattr(np, func_name)
-                    self._original_functions['numpy'][func_name] = original_func
-                    
-                    wrapped_func = self._create_numpy_wrapper(func_name, original_func)
-                    setattr(np, func_name, wrapped_func)
+                    try:
+                        original_func = getattr(np, func_name)
+                        
+                        # Verificar si es un ufunc (tiene métodos reduce y accumulate)
+                        is_ufunc = (hasattr(original_func, 'reduce') and 
+                                   hasattr(original_func, 'accumulate') and
+                                   hasattr(original_func, 'at'))
+                        
+                        if is_ufunc:
+                            # Es un ufunc, no lo interceptamos
+                            continue
+                        
+                        self._original_functions['numpy'][func_name] = original_func
+                        wrapped_func = self._create_numpy_wrapper(func_name, original_func)
+                        setattr(np, func_name, wrapped_func)
+                    except Exception:
+                        # Si falla una función específica, continuar con las demás
+                        continue
+            
+            # Interceptar operaciones de álgebra lineal del módulo linalg
+            if hasattr(np, 'linalg'):
+                linalg_functions = ['norm', 'det', 'inv', 'solve', 'eig', 'svd', 'qr', 'cholesky']
+                for func_name in linalg_functions:
+                    if hasattr(np.linalg, func_name):
+                        try:
+                            original_func = getattr(np.linalg, func_name)
+                            self._original_functions['numpy'][f'linalg.{func_name}'] = original_func
+                            
+                            wrapped_func = self._create_numpy_wrapper(f'linalg.{func_name}', original_func)
+                            setattr(np.linalg, func_name, wrapped_func)
+                        except Exception:
+                            continue
         
         except ImportError:
             pass
@@ -358,6 +405,10 @@ class FLOPCounterPython:
         """Crea un wrapper para funciones de NumPy"""
         @functools.wraps(original_func)
         def wrapper(*args, **kwargs):
+            # Solo contar si el contador está activo
+            if not self.is_active:
+                return original_func(*args, **kwargs)
+            
             start_time = time.perf_counter()
             result = original_func(*args, **kwargs)
             end_time = time.perf_counter()
@@ -387,6 +438,13 @@ class FLOPCounterPython:
     
     def _intercept_torch(self):
         """Intercepta funciones de PyTorch"""
+        # Solo interceptar si PyTorch está disponible
+        if 'torch' not in sys.modules:
+            try:
+                import torch
+            except ImportError:
+                return
+        
         try:
             import torch
             import torch.nn.functional as F
@@ -403,11 +461,14 @@ class FLOPCounterPython:
             
             for func_name in torch_functions:
                 if hasattr(torch, func_name):
-                    original_func = getattr(torch, func_name)
-                    self._original_functions['torch'][func_name] = original_func
-                    
-                    wrapped_func = self._create_torch_wrapper(func_name, original_func)
-                    setattr(torch, func_name, wrapped_func)
+                    try:
+                        original_func = getattr(torch, func_name)
+                        self._original_functions['torch'][func_name] = original_func
+                        
+                        wrapped_func = self._create_torch_wrapper(func_name, original_func)
+                        setattr(torch, func_name, wrapped_func)
+                    except Exception:
+                        continue
             
             # Interceptar torch.nn.functional
             if 'torch.nn.functional' not in self._original_functions:
@@ -416,13 +477,16 @@ class FLOPCounterPython:
             f_functions = ['linear', 'conv2d', 'relu', 'softmax', 'dropout']
             for func_name in f_functions:
                 if hasattr(F, func_name):
-                    original_func = getattr(F, func_name)
-                    self._original_functions['torch.nn.functional'][func_name] = original_func
-                    
-                    wrapped_func = self._create_torch_wrapper(f"F.{func_name}", original_func)
-                    setattr(F, func_name, wrapped_func)
+                    try:
+                        original_func = getattr(F, func_name)
+                        self._original_functions['torch.nn.functional'][func_name] = original_func
+                        
+                        wrapped_func = self._create_torch_wrapper(f"F.{func_name}", original_func)
+                        setattr(F, func_name, wrapped_func)
+                    except Exception:
+                        continue
         
-        except ImportError:
+        except Exception:
             pass
     
     def _create_torch_wrapper(self, func_name: str, original_func: callable):
@@ -458,6 +522,10 @@ class FLOPCounterPython:
     
     def _intercept_tensorflow(self):
         """Intercepta funciones de TensorFlow"""
+        # Solo interceptar si TensorFlow ya está importado
+        if 'tensorflow' not in sys.modules:
+            return
+        
         try:
             import tensorflow as tf
             
@@ -472,13 +540,18 @@ class FLOPCounterPython:
             
             for func_name in tf_functions:
                 if hasattr(tf, func_name):
-                    original_func = getattr(tf, func_name)
-                    self._original_functions['tensorflow'][func_name] = original_func
-                    
-                    wrapped_func = self._create_tensorflow_wrapper(func_name, original_func)
-                    setattr(tf, func_name, wrapped_func)
+                    try:
+                        original_func = getattr(tf, func_name)
+                        self._original_functions['tensorflow'][func_name] = original_func
+                        
+                        wrapped_func = self._create_tensorflow_wrapper(func_name, original_func)
+                        setattr(tf, func_name, wrapped_func)
+                    except Exception:
+                        # Si falla interceptar una función específica, continuar con las demás
+                        continue
         
-        except ImportError:
+        except Exception:
+            # Si TensorFlow causa problemas, simplemente no lo interceptamos
             pass
     
     def _create_tensorflow_wrapper(self, func_name: str, original_func: callable):
