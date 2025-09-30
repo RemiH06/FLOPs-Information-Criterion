@@ -1,7 +1,6 @@
 """
 Universal FLOP Counter
 =====================
-
 Una librería universal para contar FLOPs en cualquier modelo de machine learning,
 independientemente del framework utilizado (NumPy, PyTorch, TensorFlow, etc.).
 
@@ -15,12 +14,17 @@ Características principales:
 Uso básico:
     >>> import flop_counter
     >>> with flop_counter.count_flops() as counter:
-    ...     # Tu código de ML aquí
+    ...     # Código de ML aquí
     ...     result = model(data)
     >>> print(f"FLOPs utilizados: {counter.get_total_flops()}")
 
-Autores: Tu Nombre
-Versión: 0.1.0
+Uso de alto nivel:
+    >>> import flop_counter
+    >>> result = flop_counter.count_model_flops(model, input_data)
+    >>> print(f"FLOPs: {result['total_flops']:,}")
+
+Autores: Remi Heredia
+Versión: 0.2.0
 Licencia: MIT
 """
 
@@ -33,6 +37,12 @@ from .flop_counter import (
     get_total_flops,
     print_summary,
     count_flops
+)
+
+# Importar función de alto nivel
+from .model_profiler import (
+    count_model_flops,
+    compare_models
 )
 
 # Intentar importar el backend C++ optimizado
@@ -49,8 +59,8 @@ except ImportError:
     # Fallback al backend Python puro
     FLOPCounter = FLOPCounterPython
 
-__version__ = "0.1.0"
-__author__ = "Tu Nombre"
+__version__ = "0.2.0"
+__author__ = "Remi Heredia"
 __email__ = "tu.email@ejemplo.com"
 
 # Exportar símbolos principales
@@ -59,14 +69,18 @@ __all__ = [
     'FLOPCounter',
     'FLOPCounterPython',
     
-    # Funciones de conveniencia
+    # Funciones de conveniencia (bajo nivel)
     'count_flops',
-    'start_counting', 
+    'start_counting',
     'stop_counting',
     'reset_counting',
     'get_total_flops',
     'print_summary',
     'get_global_counter',
+    
+    # Funciones de alto nivel
+    'count_model_flops',
+    'compare_models',
     
     # Metadatos
     '__version__',
