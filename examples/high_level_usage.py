@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """
 Ejemplo de uso de la función de alto nivel count_model_flops()
+
+Versión en .py para leer de corrido en consola
 """
 
 import sys
@@ -53,42 +55,38 @@ print(f"  Tiempo: {result['execution_time_ms']:.2f} ms")
 # EJEMPLO 2: Modelo PyTorch
 # ============================================================================
 
-try:
-    import torch
-    import torch.nn as nn
-    
-    print("\n" + "="*70)
-    print("EJEMPLO 2: Modelo PyTorch")
-    print("="*70)
-    
-    class SimpleNet(nn.Module):
-        def __init__(self):
-            super().__init__()
-            self.fc1 = nn.Linear(784, 256)
-            self.fc2 = nn.Linear(256, 128)
-            self.fc3 = nn.Linear(128, 10)
-        
-        def forward(self, x):
-            x = torch.relu(self.fc1(x))
-            x = torch.relu(self.fc2(x))
-            x = self.fc3(x)
-            return x
-    
-    model = SimpleNet()
-    x = torch.randn(32, 784)
-    
-    result = flop_counter.count_model_flops(
-        model=model,
-        input_data=x,
-        verbose=True
-    )
-    
-    print(f"\nDetalles del resultado:")
-    print(f"  Framework detectado: {result['framework']}")
-    print(f"  Parámetros del modelo: {result['model_info'].get('total_parameters', 'N/A'):,}")
+import torch
+import torch.nn as nn
 
-except ImportError:
-    print("\n⚠ PyTorch no disponible, saltando Ejemplo 2")
+print("\n" + "="*70)
+print("EJEMPLO 2: Modelo PyTorch")
+print("="*70)
+
+class SimpleNet(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.fc1 = nn.Linear(784, 256)
+        self.fc2 = nn.Linear(256, 128)
+        self.fc3 = nn.Linear(128, 10)
+    
+    def forward(self, x):
+        x = torch.relu(self.fc1(x))
+        x = torch.relu(self.fc2(x))
+        x = self.fc3(x)
+        return x
+
+model = SimpleNet()
+x = torch.randn(32, 784)
+
+result = flop_counter.count_model_flops(
+    model=model,
+    input_data=x,
+    verbose=True
+)
+
+print(f"\nDetalles del resultado:")
+print(f"  Framework detectado: {result['framework']}")
+print(f"  Parámetros del modelo: {result['model_info'].get('total_parameters', 'N/A'):,}")
 
 # ============================================================================
 # EJEMPLO 3: Comparación de Modelos
@@ -157,41 +155,37 @@ print(f"FLOPs calculados: {flops:,}")
 # EJEMPLO 5: Modelo con PyTorch más complejo
 # ============================================================================
 
-try:
-    import torch
-    import torch.nn as nn
-    
-    print("\n" + "="*70)
-    print("EJEMPLO 5: Red Convolucional PyTorch")
-    print("="*70)
-    
-    class SimpleCNN(nn.Module):
-        def __init__(self):
-            super().__init__()
-            self.conv1 = nn.Conv2d(3, 16, kernel_size=3, padding=1)
-            self.conv2 = nn.Conv2d(16, 32, kernel_size=3, padding=1)
-            self.fc = nn.Linear(32 * 8 * 8, 10)
-        
-        def forward(self, x):
-            x = torch.relu(self.conv1(x))
-            x = torch.max_pool2d(x, 2)
-            x = torch.relu(self.conv2(x))
-            x = torch.max_pool2d(x, 2)
-            x = x.view(x.size(0), -1)
-            x = self.fc(x)
-            return x
-    
-    model = SimpleCNN()
-    x = torch.randn(1, 3, 32, 32)  # Imagen 32x32 RGB
-    
-    result = flop_counter.count_model_flops(
-        model=model,
-        input_data=x,
-        verbose=True
-    )
+import torch
+import torch.nn as nn
 
-except ImportError:
-    print("\n⚠ PyTorch no disponible, saltando Ejemplo 5")
+print("\n" + "="*70)
+print("EJEMPLO 5: Red Convolucional PyTorch")
+print("="*70)
+
+class SimpleCNN(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.conv1 = nn.Conv2d(3, 16, kernel_size=3, padding=1)
+        self.conv2 = nn.Conv2d(16, 32, kernel_size=3, padding=1)
+        self.fc = nn.Linear(32 * 8 * 8, 10)
+    
+    def forward(self, x):
+        x = torch.relu(self.conv1(x))
+        x = torch.max_pool2d(x, 2)
+        x = torch.relu(self.conv2(x))
+        x = torch.max_pool2d(x, 2)
+        x = x.view(x.size(0), -1)
+        x = self.fc(x)
+        return x
+
+model = SimpleCNN()
+x = torch.randn(1, 3, 32, 32)  # Imagen 32x32 RGB
+
+result = flop_counter.count_model_flops(
+    model=model,
+    input_data=x,
+    verbose=True
+)
 
 # ============================================================================
 # EJEMPLO 6: Análisis de Eficiencia
@@ -282,28 +276,23 @@ result_np = flop_counter.count_model_flops(
 print(f"NumPy model - Framework detectado: {result_np['framework']}")
 print(f"FLOPs: {result_np['total_flops']:,}")
 
-# PyTorch (si está disponible)
-try:
-    import torch
-    
-    def torch_fn(x):
-        W = torch.randn(50, 10)
-        return torch.matmul(x, W)
-    
-    x_torch = torch.randn(32, 50)
-    
-    result_torch = flop_counter.count_model_flops(
-        model=torch_fn,
-        input_data=x_torch,
-        framework='auto',  # Detectar automáticamente
-        verbose=False
-    )
-    
-    print(f"\nPyTorch model - Framework detectado: {result_torch['framework']}")
-    print(f"FLOPs: {result_torch['total_flops']:,}")
+import torch
 
-except ImportError:
-    print("\n⚠ PyTorch no disponible")
+def torch_fn(x):
+    W = torch.randn(50, 10)
+    return torch.matmul(x, W)
+
+x_torch = torch.randn(32, 50)
+
+result_torch = flop_counter.count_model_flops(
+    model=torch_fn,
+    input_data=x_torch,
+    framework='auto',  # Detectar automáticamente
+    verbose=False
+)
+
+print(f"\nPyTorch model - Framework detectado: {result_torch['framework']}")
+print(f"FLOPs: {result_torch['total_flops']:,}")
 
 # ============================================================================
 # EJEMPLO 8: Breakdown Detallado de Operaciones
@@ -347,33 +336,3 @@ for op_name, op_flops in sorted(result['flops_by_operation'].items(),
     print(f"{op_name:<20} {op_flops:<15,} {percentage:>10.1f}%")
 
 print(f"\nTotal: {total:,} FLOPs")
-
-# ============================================================================
-# RESUMEN FINAL
-# ============================================================================
-
-print("\n" + "="*70)
-print("RESUMEN")
-print("="*70)
-
-print("""
-La función count_model_flops() proporciona:
-
-✓ Detección automática de framework
-✓ Conteo preciso de FLOPs
-✓ Información detallada del modelo
-✓ Medición de tiempo de ejecución
-✓ Breakdown por operación
-✓ Comparación fácil entre modelos
-
-Uso básico:
-    result = flop_counter.count_model_flops(model, input_data)
-    
-Para comparar modelos:
-    results = flop_counter.compare_models({
-        'model1': (model1, input1),
-        'model2': (model2, input2)
-    })
-
-¡EUREKA!
-""")
