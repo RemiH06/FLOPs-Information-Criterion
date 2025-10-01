@@ -45,6 +45,13 @@ from .model_profiler import (
     compare_models
 )
 
+from .flop_information_criterion import (
+    FlopInformationCriterion,
+    calculate_fic,
+    evaluate_model_fic,
+    compare_models_fic
+)
+
 # Intentar importar el backend C++ optimizado
 try:
     import flop_counter_cpp
@@ -81,6 +88,12 @@ __all__ = [
     # Funciones de alto nivel
     'count_model_flops',
     'compare_models',
+
+    # Funciones para el RIC
+    'FlopInformationCriterion',
+    'calculate_fic',
+    'evaluate_model_fic',
+    'compare_models_fic',
     
     # Metadatos
     '__version__',
