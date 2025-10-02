@@ -39,7 +39,8 @@ class FlopInformationCriterion:
     """
     
     def __init__(self, variant: str = 'standard', alpha: Optional[float] = None, 
-                 beta: Optional[float] = None, custom_penalty: Optional[Callable] = None):
+                 beta: Optional[float] = None, custom_penalty: Optional[Callable] = None,
+                 flops_scale: str = 'log_normalized'):
         """
         Inicializa el calculador de FIC.
         
@@ -55,6 +56,14 @@ class FlopInformationCriterion:
             alpha: Coeficiente de penalización para FLOPs (solo si variant='custom')
             beta: Coeficiente de penalización para parámetros (solo si variant='custom')
             custom_penalty: Función personalizada para calcular penalización
+            flops_scale: Escala para FLOPs. Opciones:
+                - 'log': log(FLOPs) [ORIGINAL - poco peso]
+                - 'linear_mega': FLOPs / 1e6 [Opción 1]
+                - 'log_normalized': log(FLOPs / 1e3) [Opción 2]
+                - 'sqrt_mega': sqrt(FLOPs / 1e6) [Opción 3]
+                - 'log_params_ratio': log(FLOPs / params) [Tu opción 1]
+                - 'params_flops_ratio': log(params / FLOPs) [Tu opción 2]
+                - 'log_plus_linear': log(FLOPs) + FLOPs/1e6 [Híbrido]
         """
         self.variant = variant.lower()
         self._validate_variant()
@@ -70,6 +79,18 @@ class FlopInformationCriterion:
             self.beta = beta
         
         self.custom_penalty = custom_penalty
+        self.flops_scale = flops_scale
+        
+        # Validar escala de FLOPs
+        valid_scales = [
+            'log', 'linear_mega', 'log_normalized', 'sqrt_mega',
+            'log_params_ratio', 'params_flops_ratio', 'log_plus_linear'
+        ]
+        if self.flops_scale not in valid_scales:
+            raise ValueError(
+                f"flops_scale '{self.flops_scale}' no válido. "
+                f"Opciones: {', '.join(valid_scales)}"
+            )
         
         # Cache para resultados
         self._cache = {}
@@ -193,12 +214,78 @@ class FlopInformationCriterion:
         
         return float(log_likelihood)
     
+    def _calculate_flops_penalty(self, flops: int, n_params: int, alpha: float) -> float:
+        """
+        Calcula la penalización por FLOPs según la escala configurada.
+        
+        Args:
+            flops: Número de FLOPs
+            n_params: Número de parámetros (para escalas que usan ratio)
+            alpha: Coeficiente α
+        
+        Returns:
+            float: Penalización por FLOPs
+        """
+        if flops <= 0:
+            warnings.warn("FLOPs = 0, penalización por FLOPs es 0", UserWarning)
+            return 0.0
+        
+        if self.flops_scale == 'log':
+            # ORIGINAL: log(FLOPs)
+            # Problema: Para FLOPs grandes, log es muy pequeño
+            penalty = alpha * np.log(flops)
+        
+        elif self.flops_scale == 'linear_mega':
+            # OPCIÓN 1: FLOPs / 1e6 (lineal en millones)
+            # Ventaja: Directamente proporcional a FLOPs
+            # Problema: Puede crecer demasiado para modelos muy grandes
+            penalty = alpha * (flops / 1e6)
+        
+        elif self.flops_scale == 'log_normalized':
+            # OPCIÓN 2: log(FLOPs / 1e3)
+            # Ventaja: Reduce el rango antes de aplicar log
+            penalty = alpha * np.log(flops / 1e3)
+        
+        elif self.flops_scale == 'sqrt_mega':
+            # OPCIÓN 3: sqrt(FLOPs / 1e6)
+            # Ventaja: Más suave que lineal, más fuerte que log
+            penalty = alpha * np.sqrt(flops / 1e6)
+        
+        elif self.flops_scale == 'log_params_ratio':
+            # TU OPCIÓN 1: log(FLOPs / params)
+            # Ventaja: Normaliza por complejidad del modelo
+            if n_params > 0:
+                penalty = alpha * np.log(flops / n_params)
+            else:
+                penalty = alpha * np.log(flops)
+        
+        elif self.flops_scale == 'params_flops_ratio':
+            # TU OPCIÓN 2: log(params / FLOPs)
+            # Ventaja: Penaliza modelos con pocos parámetros pero muchos FLOPs
+            if n_params > 0:
+                penalty = alpha * np.log(n_params / flops)
+            else:
+                penalty = 0.0
+        
+        elif self.flops_scale == 'log_plus_linear':
+            # HÍBRIDO: log(FLOPs) + FLOPs/1e6
+            # Ventaja: Combina crecimiento logarítmico con penalización lineal
+            penalty = alpha * (np.log(flops) + flops / 1e6)
+        
+        else:
+            # Default: log
+            penalty = alpha * np.log(flops)
+        
+        return penalty
+    
     def calculate_fic(self,
                      log_likelihood: float,
                      flops: int,
                      n_params: int,
                      n_samples: int,
-                     accuracy: Optional[float] = None) -> Dict[str, float]:
+                     accuracy: Optional[float] = None,
+                     alpha_override: Optional[float] = None,
+                     beta_override: Optional[float] = None) -> Dict[str, float]:
         """
         Calcula el FIC dado los componentes.
         
@@ -208,6 +295,8 @@ class FlopInformationCriterion:
             n_params: Número de parámetros del modelo
             n_samples: Tamaño de la muestra
             accuracy: Precisión del modelo (opcional, para variant='relative')
+            alpha_override: Sobreescribir α temporalmente para experimentos
+            beta_override: Sobreescribir β temporalmente para experimentos
         
         Returns:
             dict con keys:
@@ -217,19 +306,19 @@ class FlopInformationCriterion:
                 - 'params_penalty': Penalización por parámetros
                 - 'alpha': Valor de α usado
                 - 'beta': Valor de β usado
+                - 'flops_scale': Escala de FLOPs usada
         """
-        # Obtener coeficientes
-        alpha, beta = self._get_coefficients(n_samples, accuracy)
+        # Obtener coeficientes (permitir override para experimentos)
+        if alpha_override is not None and beta_override is not None:
+            alpha, beta = alpha_override, beta_override
+        else:
+            alpha, beta = self._get_coefficients(n_samples, accuracy)
         
         # Calcular términos
         likelihood_term = log_likelihood
         
-        # Penalización por FLOPs (escala logarítmica)
-        if flops > 0:
-            flops_penalty = alpha * np.log(flops)
-        else:
-            flops_penalty = 0.0
-            warnings.warn("FLOPs = 0, penalización por FLOPs es 0", UserWarning)
+        # Penalización por FLOPs (usando la escala configurada)
+        flops_penalty = self._calculate_flops_penalty(flops, n_params, alpha)
         
         # Penalización por parámetros
         params_penalty = beta * n_params
@@ -251,6 +340,7 @@ class FlopInformationCriterion:
             'custom_penalty': custom_term,
             'alpha': alpha,
             'beta': beta,
+            'flops_scale': self.flops_scale,
             'variant': self.variant
         }
     
@@ -262,7 +352,9 @@ class FlopInformationCriterion:
                       task: str = 'regression',
                       n_params: Optional[int] = None,
                       framework: str = 'auto',
-                      sigma: Optional[float] = None) -> Dict[str, Any]:
+                      sigma: Optional[float] = None,
+                      alpha_override: Optional[float] = None,
+                      beta_override: Optional[float] = None) -> Dict[str, Any]:
         """
         Evalúa un modelo completo y calcula su FIC.
         
@@ -275,6 +367,8 @@ class FlopInformationCriterion:
             n_params: Número de parámetros (si None, se intenta inferir)
             framework: Framework del modelo ('auto', 'torch', 'tensorflow', 'numpy')
             sigma: Desviación estándar del error (regresión)
+            alpha_override: Override temporal de α para experimentos
+            beta_override: Override temporal de β para experimentos
         
         Returns:
             dict con resultados completos del FIC y métricas adicionales
@@ -310,13 +404,15 @@ class FlopInformationCriterion:
         # 5. Calcular métricas adicionales
         accuracy = self._calculate_accuracy(y_true, y_pred, task)
         
-        # 6. Calcular FIC
+        # 6. Calcular FIC (con posibles overrides)
         fic_result = self.calculate_fic(
             log_likelihood=log_likelihood,
             flops=flops,
             n_params=n_params,
             n_samples=n_samples,
-            accuracy=accuracy
+            accuracy=accuracy,
+            alpha_override=alpha_override,
+            beta_override=beta_override
         )
         
         # 7. Combinar resultados
