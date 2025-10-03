@@ -84,7 +84,8 @@ class FlopInformationCriterion:
         # Validar escala de FLOPs
         valid_scales = [
             'log', 'linear_mega', 'log_normalized', 'sqrt_mega',
-            'log_params_ratio', 'params_flops_ratio', 'log_plus_linear'
+            'log_params_ratio', 'params_flops_ratio', 'log_plus_linear',
+            'cube_root_kilo', 'log_flops_per_param'
         ]
         if self.flops_scale not in valid_scales:
             raise ValueError(
@@ -271,7 +272,21 @@ class FlopInformationCriterion:
             # HÍBRIDO: log(FLOPs) + FLOPs/1e6
             # Ventaja: Combina crecimiento logarítmico con penalización lineal
             penalty = alpha * (np.log(flops) + flops / 1e6)
-        
+
+        elif self.flops_scale == 'cube_root_kilo':
+            # NUEVA: (FLOPs^(1/3)) / 1e3
+            # Ventaja: Crece más rápido que log, más lento que sqrt
+            # Suaviza diferencias grandes de FLOPs
+            penalty = alpha * (flops ** (1/3) / 1e3)
+
+        elif self.flops_scale == 'log_flops_per_param':
+            # NUEVA: log(1 + FLOPs/params)
+            # Ventaja: Normaliza por parámetros, siempre positivo
+            # Penaliza modelos ineficientes (muchos FLOPs por parámetro)
+            if n_params > 0:
+                penalty = alpha * np.log(1 + flops / n_params)
+            else:
+                penalty = alpha * np.log(1 + flops)
         else:
             # Default: log
             penalty = alpha * np.log(flops)
