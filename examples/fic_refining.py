@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-FIC: Experimentación exhaustiva con todas las escalas y coeficientes
-Objetivo: Encontrar la mejor combinación de escala, α y β para el FIC
+FIC: Experimentación con escalas paramétricas log-linear
+Objetivo: Encontrar el mejor balance λ entre log y linear
 """
 
 import sys
@@ -16,27 +16,32 @@ from flop_counter.flop_information_criterion import FlopInformationCriterion
 np.random.seed(42)
 
 print("="*100)
-print("FIC: EXPERIMENTACIÓN EXHAUSTIVA - TODAS LAS ESCALAS Y COEFICIENTES")
+print("FIC: EXPERIMENTACIÓN CON ESCALAS PARAMÉTRICAS")
 print("="*100)
 
 # ============================================================================
 # CONFIGURACIÓN DE EXPERIMENTOS
 # ============================================================================
 
-# Escalas seleccionadas para experimentación
-ALL_SCALES = [
-    'log_plus_linear',      # log(FLOPs) + FLOPs/1e6 - Híbrido
-    'sqrt_mega',            # sqrt(FLOPs / 1e6) - Suave
-    'log_normalized',       # log(FLOPs / 1e3) - Normalizado
-    'cube_root_kilo',       # (FLOPs^(1/3)) / 1e3 - Nueva sugerencia 1
-    'log_flops_per_param'   # log(1 + FLOPs/params) - Nueva sugerencia 2
-]
+# Valores de λ para explorar (balance log vs linear)
+LAMBDA_VALUES = [0.0, 0.2, 0.4, 0.5, 0.6, 0.8, 1.0]
 
-# Valores de α (coeficiente FLOPs) para experimentar
+# Escalas a comparar:
+# - log_plus_linear (original, λ fijo)
+# - parametric con diferentes λ
+ALL_SCALES = ['log_plus_linear'] + [f'parametric_log_linear_{lam}' for lam in LAMBDA_VALUES]
+
+# Valores de α (penalización FLOPs) - reducidos para acelerar
 ALPHA_VALUES = [0.5, 1.0, 2.0, 5.0, 10.0]
 
-# Valores de β (coeficiente parámetros) para experimentar
-BETA_VALUES = [0.0, 0.5, 1.0, 2.0, 5.0]
+# Valores de β (penalización parámetros) - reducidos
+BETA_VALUES = [0.0, 0.5, 1.0, 2.0]
+
+print(f"\nConfiguración:")
+print(f"  Escalas paramétricas: {len(LAMBDA_VALUES)} valores de λ")
+print(f"  Valores α: {ALPHA_VALUES}")
+print(f"  Valores β: {BETA_VALUES}")
+print(f"  Total configuraciones por experimento: {len(ALL_SCALES) * len(ALPHA_VALUES) * len(BETA_VALUES)}")
 
 # ============================================================================
 # FUNCIONES AUXILIARES
@@ -49,12 +54,26 @@ def calculate_bic(log_likelihood: float, k: int, n: int) -> float:
     return log_likelihood + k * np.log(n)
 
 def create_results_dataframe(results_dict):
-    """Convierte resultados a DataFrame para análisis."""
+    """Convierte resultados a DataFrame."""
     data = []
     for key, result in results_dict.items():
         scale, alpha, beta, model = key
+        
+        # Extraer λ del nombre de la escala
+        if scale.startswith('parametric_log_linear_'):
+            lambda_val = float(scale.split('_')[-1])
+            scale_type = 'parametric'
+        elif scale == 'log_plus_linear':
+            lambda_val = None  # No aplica
+            scale_type = 'original'
+        else:
+            lambda_val = None
+            scale_type = 'other'
+        
         data.append({
             'Scale': scale,
+            'ScaleType': scale_type,
+            'Lambda': lambda_val,
             'Alpha': alpha,
             'Beta': beta,
             'Model': model,
@@ -68,101 +87,107 @@ def create_results_dataframe(results_dict):
         })
     return pd.DataFrame(data)
 
-def analyze_experiment(df, experiment_name):
-    """Analiza resultados de un experimento."""
+def analyze_lambda_sensitivity(df, experiment_name):
+    """Analiza cómo λ afecta la sensibilidad del FIC."""
     print(f"\n{'='*100}")
-    print(f"ANÁLISIS: {experiment_name}")
+    print(f"ANÁLISIS DE SENSIBILIDAD: {experiment_name}")
     print(f"{'='*100}")
     
-    # Determinar el modelo de referencia (el primero alfabéticamente o 'Simple' si existe)
+    # Solo analizar escalas paramétricas
+    param_df = df[df['ScaleType'] == 'parametric'].copy()
+    
+    if len(param_df) == 0:
+        print("No hay datos de escalas paramétricas")
+        return
+    
+    # Determinar modelo de referencia
     all_models = df['Model'].unique()
     reference_model = 'Simple' if 'Simple' in all_models else sorted(all_models)[0]
     
-    # Para cada escala, encontrar la mejor combinación α, β
-    print(f"\n📊 MEJORES CONFIGURACIONES POR ESCALA (referencia: {reference_model}):")
-    print(f"{'Scale':<20} {'Best α':<10} {'Best β':<10} {'Model':<15} {'FIC':<12} {'ΔFIC vs Ref':<15}")
-    print("-" * 100)
+    print(f"\n📊 SENSIBILIDAD POR VALOR DE λ (referencia: {reference_model}):")
+    print(f"{'λ':<10} {'Avg ΔFIC':<15} {'Std ΔFIC':<15} {'Max ΔFIC':<15} {'Best α':<10} {'Best β':<10}")
+    print("-" * 85)
     
-    for scale in ALL_SCALES:
-        scale_df = df[df['Scale'] == scale]
-        
-        # Encontrar el modelo de referencia con mejor FIC para esta escala
-        ref_df = scale_df[scale_df['Model'] == reference_model]
-        if len(ref_df) == 0:
-            continue
-        
-        best_ref = ref_df.loc[ref_df['FIC'].idxmin()]
-        
-        # Para cada modelo, ver qué tan bien lo distingue
-        for model in scale_df['Model'].unique():
-            if model == reference_model:
-                continue
-            
-            model_df = scale_df[scale_df['Model'] == model]
-            best_model = model_df.loc[model_df['FIC'].idxmin()]
-            
-            delta_fic = best_model['FIC'] - best_ref['FIC']
-            
-            print(f"{scale:<20} α={best_model['Alpha']:<8.1f} β={best_model['Beta']:<8.1f} "
-                  f"{model:<15} {best_model['FIC']:<12.2f} {delta_fic:>+14.2f}")
+    lambda_stats = []
     
-    # Analizar sensibilidad de cada escala
-    print(f"\n📈 SENSIBILIDAD DE ESCALAS (diferencia promedio entre modelos):")
-    print(f"{'Scale':<20} {'Avg ΔFIC':<15} {'Std ΔFIC':<15} {'Max ΔFIC':<15}")
-    print("-" * 70)
-    
-    for scale in ALL_SCALES:
-        scale_df = df[df['Scale'] == scale]
+    for lambda_val in sorted(param_df['Lambda'].unique()):
+        lambda_df = param_df[param_df['Lambda'] == lambda_val]
         
-        # Calcular diferencias entre modelo de referencia y otros modelos
-        ref_fics = scale_df[scale_df['Model'] == reference_model]['FIC'].values
-        other_fics = scale_df[scale_df['Model'] != reference_model]['FIC'].values
-        
-        if len(ref_fics) == 0 or len(other_fics) == 0:
-            continue
-        
-        # Para cada α,β calcular la diferencia promedio
+        # Calcular sensibilidad para esta λ
         deltas = []
         for alpha in ALPHA_VALUES:
             for beta in BETA_VALUES:
-                config_df = scale_df[(scale_df['Alpha'] == alpha) & (scale_df['Beta'] == beta)]
+                config_df = lambda_df[(lambda_df['Alpha'] == alpha) & (lambda_df['Beta'] == beta)]
+                
                 if len(config_df) >= 2:
                     ref_config = config_df[config_df['Model'] == reference_model]
                     if len(ref_config) > 0:
                         ref_fic = ref_config['FIC'].values[0]
-                        other_fic = config_df[config_df['Model'] != reference_model]['FIC'].mean()
-                        deltas.append(abs(other_fic - ref_fic))
+                        other_fics = config_df[config_df['Model'] != reference_model]['FIC'].values
+                        for other_fic in other_fics:
+                            deltas.append(abs(other_fic - ref_fic))
         
         if deltas:
-            print(f"{scale:<20} {np.mean(deltas):<15.2f} {np.std(deltas):<15.2f} {np.max(deltas):<15.2f}")
+            avg_delta = np.mean(deltas)
+            std_delta = np.std(deltas)
+            max_delta = np.max(deltas)
+            
+            # Encontrar mejor configuración para esta λ
+            best_config = lambda_df.groupby(['Alpha', 'Beta']).apply(
+                lambda x: abs(x[x['Model'] != reference_model]['FIC'].mean() - 
+                             x[x['Model'] == reference_model]['FIC'].mean())
+            ).idxmax()
+            
+            lambda_stats.append({
+                'lambda': lambda_val,
+                'avg_delta': avg_delta,
+                'std_delta': std_delta,
+                'max_delta': max_delta,
+                'best_alpha': best_config[0],
+                'best_beta': best_config[1]
+            })
+            
+            print(f"{lambda_val:<10.1f} {avg_delta:<15.2f} {std_delta:<15.2f} {max_delta:<15.2f} "
+                  f"α={best_config[0]:<8.1f} β={best_config[1]:<8.1f}")
     
-    # Recomendaciones
-    print(f"\n💡 RECOMENDACIONES:")
-    
-    # Escala con mayor sensibilidad
-    sensitivities = {}
-    for scale in ALL_SCALES:
-        scale_df = df[df['Scale'] == scale]
-        deltas = []
-        for alpha in ALPHA_VALUES:
-            for beta in BETA_VALUES:
-                config_df = scale_df[(scale_df['Alpha'] == alpha) & (scale_df['Beta'] == beta)]
-                if len(config_df) >= 2:
-                    ref_config = config_df[config_df['Model'] == reference_model]
-                    if len(ref_config) > 0:
-                        ref_fic = ref_config['FIC'].values[0]
-                        other_fic = config_df[config_df['Model'] != reference_model]['FIC'].mean()
-                        deltas.append(abs(other_fic - ref_fic))
+    # Encontrar mejor λ
+    if lambda_stats:
+        best_lambda_stat = max(lambda_stats, key=lambda x: x['avg_delta'])
+        worst_lambda_stat = min(lambda_stats, key=lambda x: x['avg_delta'])
         
-        if deltas:
-            sensitivities[scale] = np.mean(deltas)
-    
-    if sensitivities:
-        best_scale = max(sensitivities, key=sensitivities.get)
-        print(f"   - Escala más sensible: {best_scale} (ΔFIC promedio = {sensitivities[best_scale]:.2f})")
+        print(f"\n💡 RESULTADOS:")
+        print(f"   ⭐ Mejor λ: {best_lambda_stat['lambda']:.1f} "
+              f"(ΔFIC promedio = {best_lambda_stat['avg_delta']:.2f})")
+        print(f"      Configuración óptima: α={best_lambda_stat['best_alpha']:.1f}, "
+              f"β={best_lambda_stat['best_beta']:.1f}")
+        print(f"   ⚠️  Peor λ: {worst_lambda_stat['lambda']:.1f} "
+              f"(ΔFIC promedio = {worst_lambda_stat['avg_delta']:.2f})")
         
-        worst_scale = min(sensitivities, key=sensitivities.get)
-        print(f"   - Escala menos sensible: {worst_scale} (ΔFIC promedio = {sensitivities[worst_scale]:.2f})")
+        # Comparar con log_plus_linear original
+        original_df = df[df['Scale'] == 'log_plus_linear']
+        if len(original_df) > 0:
+            orig_deltas = []
+            for alpha in ALPHA_VALUES:
+                for beta in BETA_VALUES:
+                    config_df = original_df[(original_df['Alpha'] == alpha) & (original_df['Beta'] == beta)]
+                    if len(config_df) >= 2:
+                        ref_config = config_df[config_df['Model'] == reference_model]
+                        if len(ref_config) > 0:
+                            ref_fic = ref_config['FIC'].values[0]
+                            other_fics = config_df[config_df['Model'] != reference_model]['FIC'].values
+                            for other_fic in other_fics:
+                                orig_deltas.append(abs(other_fic - ref_fic))
+            
+            if orig_deltas:
+                orig_avg = np.mean(orig_deltas)
+                improvement = ((best_lambda_stat['avg_delta'] - orig_avg) / orig_avg) * 100
+                
+                print(f"\n   📈 Comparación con log_plus_linear original:")
+                print(f"      Original ΔFIC: {orig_avg:.2f}")
+                print(f"      Mejor paramétrico: {best_lambda_stat['avg_delta']:.2f}")
+                print(f"      Mejora: {improvement:+.1f}%")
+    
+    return lambda_stats
 
 def print_experiment_header(title, models_info):
     """Imprime header de experimento."""
@@ -171,7 +196,7 @@ def print_experiment_header(title, models_info):
     print(f"{'='*100}")
     print("\n📋 Modelos a comparar:")
     for model_name, info in models_info.items():
-        print(f"   - {model_name}: {info['params']} parámetros, ~{info['expected_flops']} FLOPs esperados")
+        print(f"   - {model_name}: {info['params']} parámetros, {info['expected_flops']} FLOPs esperados")
 
 # ============================================================================
 # EJEMPLO 1: REGRESIÓN LINEAL - MODELO SIMPLE VS COMPLEJO
@@ -181,7 +206,7 @@ print_experiment_header(
     "EXPERIMENTO 1: REGRESIÓN LINEAL",
     {
         'Simple': {'params': 2, 'expected_flops': '~500'},
-        'Complejo': {'params': 2, 'expected_flops': '~5000 (operaciones innecesarias)'}
+        'Complejo': {'params': 2, 'expected_flops': '~5000 (10x más)'}
     }
 )
 
@@ -203,7 +228,7 @@ def linear_model_complex(X):
     X_extended = np.column_stack([X, np.ones(len(X))])
     temp = X_extended @ W
     
-    # Muchas operaciones costosas e innecesarias
+    # Operaciones costosas e innecesarias
     for _ in range(5):
         temp = np.exp(np.log(np.abs(temp) + 1e-10)) * np.sign(temp)
         temp = temp @ np.eye(1)
@@ -211,59 +236,70 @@ def linear_model_complex(X):
     
     return temp
 
-print(f"\n🔬 Ejecutando experimentos...")
-print(f"   Escalas seleccionadas: {len(ALL_SCALES)}")
-print(f"   - log_plus_linear: log(FLOPs) + FLOPs/1e6")
-print(f"   - sqrt_mega: sqrt(FLOPs/1e6)")
-print(f"   - log_normalized: log(FLOPs/1e3)")
-print(f"   - cube_root_kilo: (FLOPs^(1/3))/1e3 [NUEVA]")
-print(f"   - log_flops_per_param: log(1 + FLOPs/params) [NUEVA]")
-print(f"   Valores α: {ALPHA_VALUES}")
-print(f"   Valores β: {BETA_VALUES}")
+print("\n🔬 Ejecutando experimentos...")
 print(f"   Total configuraciones: {len(ALL_SCALES) * len(ALPHA_VALUES) * len(BETA_VALUES)}")
 
 results_exp1 = {}
 
 for scale in ALL_SCALES:
-    print(f"\n   Procesando escala: {scale}")
+    scale_label = scale if scale == 'log_plus_linear' else f"λ={scale.split('_')[-1]}"
+    print(f"   Procesando: {scale_label}")
     
     for alpha in ALPHA_VALUES:
         for beta in BETA_VALUES:
-            fic_calc = FlopInformationCriterion(variant='custom', alpha=alpha, beta=beta, flops_scale=scale)
+            # Para escalas paramétricas, usar variant='custom'
+            if scale.startswith('parametric_log_linear_'):
+                fic_calc = FlopInformationCriterion(
+                    variant='custom', 
+                    alpha=alpha, 
+                    beta=beta, 
+                    flops_scale=scale
+                )
+            else:
+                fic_calc = FlopInformationCriterion(
+                    variant='custom',
+                    alpha=alpha,
+                    beta=beta,
+                    flops_scale=scale
+                )
             
-            # Evaluar modelo simple
-            result_simple = fic_calc.evaluate_model(
-                model=linear_model_simple,
-                X=X_train,
-                y_true=y_train,
-                task='regression',
-                n_params=2,
-                framework='numpy',
-                alpha_override=alpha,
-                beta_override=beta
-            )
-            
-            # Evaluar modelo complejo
-            result_complex = fic_calc.evaluate_model(
-                model=linear_model_complex,
-                X=X_train,
-                y_true=y_train,
-                task='regression',
-                n_params=2,
-                framework='numpy',
-                alpha_override=alpha,
-                beta_override=beta
-            )
-            
-            results_exp1[(scale, alpha, beta, 'Simple')] = result_simple
-            results_exp1[(scale, alpha, beta, 'Complejo')] = result_complex
+            # Evaluar modelos
+            try:
+                result_simple = fic_calc.evaluate_model(
+                    model=linear_model_simple,
+                    X=X_train,
+                    y_true=y_train,
+                    task='regression',
+                    n_params=2,
+                    framework='numpy',
+                    alpha_override=alpha,
+                    beta_override=beta
+                )
+                
+                result_complex = fic_calc.evaluate_model(
+                    model=linear_model_complex,
+                    X=X_train,
+                    y_true=y_train,
+                    task='regression',
+                    n_params=2,
+                    framework='numpy',
+                    alpha_override=alpha,
+                    beta_override=beta
+                )
+                
+                results_exp1[(scale, alpha, beta, 'Simple')] = result_simple
+                results_exp1[(scale, alpha, beta, 'Complejo')] = result_complex
+                
+            except Exception as e:
+                print(f"      ⚠️  Error en {scale}, α={alpha}, β={beta}: {e}")
+                continue
 
 # Analizar resultados
 df_exp1 = create_results_dataframe(results_exp1)
-analyze_experiment(df_exp1, "Experimento 1: Regresión Lineal")
+lambda_stats_exp1 = analyze_lambda_sensitivity(df_exp1, "Experimento 1: Regresión Lineal")
 
 # ============================================================================
-# EJEMPLO 2: REDES NEURONALES - ARQUITECTURAS DIFERENTES
+# EJEMPLO 2: REDES NEURONALES
 # ============================================================================
 
 print_experiment_header(
@@ -333,65 +369,74 @@ print("\n🔬 Ejecutando experimentos...")
 results_exp2 = {}
 
 for scale in ALL_SCALES:
-    print(f"\n   Procesando escala: {scale}")
+    scale_label = scale if scale == 'log_plus_linear' else f"λ={scale.split('_')[-1]}"
+    print(f"   Procesando: {scale_label}")
     
     for alpha in ALPHA_VALUES:
         for beta in BETA_VALUES:
-            fic_calc = FlopInformationCriterion(variant='custom', alpha=alpha, beta=beta, flops_scale=scale)
+            fic_calc = FlopInformationCriterion(
+                variant='custom',
+                alpha=alpha,
+                beta=beta,
+                flops_scale=scale
+            )
             
             for name, model, n_params in [
                 ("Wide-Shallow", wide_shallow_net, n_params_wide),
                 ("Deep-Narrow", deep_narrow_net, n_params_deep),
                 ("Balanced", balanced_net, n_params_balanced)
             ]:
-                result = fic_calc.evaluate_model(
-                    model=model,
-                    X=X_train,
-                    y_true=y_train,
-                    task='classification',
-                    n_params=n_params,
-                    framework='numpy',
-                    alpha_override=alpha,
-                    beta_override=beta
-                )
-                
-                results_exp2[(scale, alpha, beta, name)] = result
+                try:
+                    result = fic_calc.evaluate_model(
+                        model=model,
+                        X=X_train,
+                        y_true=y_train,
+                        task='classification',
+                        n_params=n_params,
+                        framework='numpy',
+                        alpha_override=alpha,
+                        beta_override=beta
+                    )
+                    
+                    results_exp2[(scale, alpha, beta, name)] = result
+                    
+                except Exception as e:
+                    print(f"      ⚠️  Error en {name}: {e}")
+                    continue
 
 df_exp2 = create_results_dataframe(results_exp2)
-analyze_experiment(df_exp2, "Experimento 2: Redes Neuronales")
+lambda_stats_exp2 = analyze_lambda_sensitivity(df_exp2, "Experimento 2: Redes Neuronales")
 
 # ============================================================================
-# EJEMPLO 3: POLINOMIOS - COMPLEJIDAD CRECIENTE
+# EJEMPLO 3: POLINOMIOS
 # ============================================================================
 
 print_experiment_header(
     "EXPERIMENTO 3: REGRESIÓN POLINOMIAL",
     {
         'Linear': {'params': 2, 'expected_flops': 'muy bajo'},
-        'Quadratic': {'params': 3, 'expected_flops': 'bajo'},
+        'Quadratic': {'params': 3, 'expected_flops': 'bajo (óptimo)'},
         'Cubic': {'params': 4, 'expected_flops': 'medio'},
         'Poly5': {'params': 6, 'expected_flops': 'alto'},
         'Poly10': {'params': 11, 'expected_flops': 'muy alto'}
     }
 )
 
-# Datos con relación no lineal
+# Datos con relación cuadrática
 n_samples = 150
 X_poly = np.random.randn(n_samples, 1)
-# Verdadera relación: cuadrática con ruido
 y_poly = 2.0 * X_poly.squeeze()**2 + 1.5 * X_poly.squeeze() + 1.0 + np.random.randn(n_samples) * 0.5
 
 def poly_model(X, degree):
     """Modelo polinomial de grado especificado."""
     def model(X_input):
         X_features = np.column_stack([X_input**i for i in range(degree + 1)])
-        # Coeficientes aleatorios pero consistentes
         coeffs = np.random.randn(degree + 1) * 0.1
-        coeffs[0] = 1.0  # intercept correcto
+        coeffs[0] = 1.0
         if degree >= 1:
-            coeffs[1] = 1.5  # término lineal correcto
+            coeffs[1] = 1.5
         if degree >= 2:
-            coeffs[2] = 2.0  # término cuadrático correcto
+            coeffs[2] = 2.0
         return X_features @ coeffs
     return model
 
@@ -400,150 +445,81 @@ print("\n🔬 Ejecutando experimentos...")
 results_exp3 = {}
 
 for scale in ALL_SCALES:
-    print(f"\n   Procesando escala: {scale}")
+    scale_label = scale if scale == 'log_plus_linear' else f"λ={scale.split('_')[-1]}"
+    print(f"   Procesando: {scale_label}")
     
     for alpha in ALPHA_VALUES:
         for beta in BETA_VALUES:
-            fic_calc = FlopInformationCriterion(variant='custom', alpha=alpha, beta=beta, flops_scale=scale)
+            fic_calc = FlopInformationCriterion(
+                variant='custom',
+                alpha=alpha,
+                beta=beta,
+                flops_scale=scale
+            )
             
             for degree, name in [(1, 'Linear'), (2, 'Quadratic'), (3, 'Cubic'), 
                                   (5, 'Poly5'), (10, 'Poly10')]:
-                model = poly_model(X_poly, degree)
-                
-                result = fic_calc.evaluate_model(
-                    model=model,
-                    X=X_poly,
-                    y_true=y_poly,
-                    task='regression',
-                    n_params=degree + 1,
-                    framework='numpy',
-                    alpha_override=alpha,
-                    beta_override=beta
-                )
-                
-                results_exp3[(scale, alpha, beta, name)] = result
+                try:
+                    model = poly_model(X_poly, degree)
+                    
+                    result = fic_calc.evaluate_model(
+                        model=model,
+                        X=X_poly,
+                        y_true=y_poly,
+                        task='regression',
+                        n_params=degree + 1,
+                        framework='numpy',
+                        alpha_override=alpha,
+                        beta_override=beta
+                    )
+                    
+                    results_exp3[(scale, alpha, beta, name)] = result
+                    
+                except Exception as e:
+                    print(f"      ⚠️  Error en {name}: {e}")
+                    continue
 
 df_exp3 = create_results_dataframe(results_exp3)
-analyze_experiment(df_exp3, "Experimento 3: Regresión Polinomial")
+lambda_stats_exp3 = analyze_lambda_sensitivity(df_exp3, "Experimento 3: Regresión Polinomial")
 
 # ============================================================================
-# ANÁLISIS COMPARATIVO GLOBAL
+# ANÁLISIS FINAL
 # ============================================================================
 
 print(f"\n\n{'='*100}")
-print("ANÁLISIS COMPARATIVO GLOBAL: TODAS LAS ESCALAS EN TODOS LOS EXPERIMENTOS")
+print("RESUMEN FINAL: MEJOR VALOR DE λ")
 print(f"{'='*100}")
 
-print("\n📊 RANKING DE ESCALAS POR SENSIBILIDAD (promedio en todos los experimentos):")
-
-# Calcular sensibilidad promedio de cada escala
-scale_sensitivities = {}
-
-for scale in ALL_SCALES:
-    sensitivities = []
+if lambda_stats_exp1 and lambda_stats_exp2 and lambda_stats_exp3:
+    # Calcular λ promedio óptimo
+    best_lambdas = [
+        max(lambda_stats_exp1, key=lambda x: x['avg_delta'])['lambda'],
+        max(lambda_stats_exp2, key=lambda x: x['avg_delta'])['lambda'],
+        max(lambda_stats_exp3, key=lambda x: x['avg_delta'])['lambda']
+    ]
     
-    # Experimento 1
-    scale_df1 = df_exp1[df_exp1['Scale'] == scale]
-    for alpha in ALPHA_VALUES:
-        for beta in BETA_VALUES:
-            config = scale_df1[(scale_df1['Alpha'] == alpha) & (scale_df1['Beta'] == beta)]
-            if len(config) >= 2:
-                simple = config[config['Model'] == 'Simple']['FIC'].values[0]
-                complex = config[config['Model'] == 'Complejo']['FIC'].values[0]
-                sensitivities.append(abs(complex - simple))
+    print(f"\n📊 Mejor λ por experimento:")
+    print(f"   Exp 1 (Regresión): λ = {best_lambdas[0]:.1f}")
+    print(f"   Exp 2 (Redes): λ = {best_lambdas[1]:.1f}")
+    print(f"   Exp 3 (Polinomios): λ = {best_lambdas[2]:.1f}")
     
-    # Experimento 2
-    scale_df2 = df_exp2[df_exp2['Scale'] == scale]
-    for alpha in ALPHA_VALUES:
-        for beta in BETA_VALUES:
-            config = scale_df2[(scale_df2['Alpha'] == alpha) & (scale_df2['Beta'] == beta)]
-            if len(config) >= 2:
-                models = config['FIC'].values
-                sensitivities.append(np.std(models))
+    avg_lambda = np.mean(best_lambdas)
+    print(f"\n⭐ λ ÓPTIMO PROMEDIO: {avg_lambda:.2f}")
     
-    # Experimento 3
-    scale_df3 = df_exp3[df_exp3['Scale'] == scale]
-    for alpha in ALPHA_VALUES:
-        for beta in BETA_VALUES:
-            config = scale_df3[(scale_df3['Alpha'] == alpha) & (scale_df3['Beta'] == beta)]
-            if len(config) >= 2:
-                models = config['FIC'].values
-                sensitivities.append(np.std(models))
-    
-    if sensitivities:
-        scale_sensitivities[scale] = np.mean(sensitivities)
-
-# Ordenar por sensibilidad
-sorted_scales = sorted(scale_sensitivities.items(), key=lambda x: x[1], reverse=True)
-
-print(f"\n{'Rank':<6} {'Scale':<25} {'Avg Sensitivity':<20} {'Recomendación':<30}")
-print("-" * 100)
-
-for i, (scale, sensitivity) in enumerate(sorted_scales, 1):
-    if i == 1:
-        rec = "⭐ MEJOR - Más sensible"
-    elif i <= 3:
-        rec = "✅ Buena opción"
+    print(f"\n💡 FÓRMULA RECOMENDADA:")
+    print(f"   FIC = -2*log(L) + α*(λ*log(FLOPs) + (1-λ)*FLOPs/1e6) + β*k")
+    print(f"   donde λ = {avg_lambda:.2f}")
+    print(f"\n   Interpretación:")
+    if avg_lambda > 0.7:
+        print(f"   - λ alto ({avg_lambda:.2f}): Domina término logarítmico")
+        print(f"   - Sensible a diferencias relativas en FLOPs")
+    elif avg_lambda < 0.3:
+        print(f"   - λ bajo ({avg_lambda:.2f}): Domina término lineal")
+        print(f"   - Sensible a diferencias absolutas en FLOPs")
     else:
-        rec = "⚠️  Menos recomendada"
-    
-    print(f"{i:<6} {scale:<25} {sensitivity:<20.2f} {rec:<30}")
-
-# ============================================================================
-# RECOMENDACIONES FINALES
-# ============================================================================
-
-print(f"\n\n{'='*100}")
-print("RECOMENDACIONES FINALES PARA TU FIC")
-print(f"{'='*100}")
-
-best_scale = sorted_scales[0][0]
-
-print(f"""
-🎯 CONFIGURACIÓN RECOMENDADA GENERAL:
-   
-   Escala: {best_scale}
-   Razón: Mayor sensibilidad promedio en todos los experimentos
-   
-   Coeficientes sugeridos:
-   - α (FLOPs): 2.0 - 5.0 (balancea penalización sin dominar)
-   - β (params): 0.5 - 1.0 (complementa la penalización por FLOPs)
-
-📋 GUÍA POR CASO DE USO:
-
-1. DEPLOYMENT EN MÓVILES/EDGE (FLOPs críticos):
-   - Escala: linear_mega o sqrt_mega
-   - α: 5.0 - 10.0 (penaliza fuertemente FLOPs)
-   - β: 0.5 (parámetros menos importantes)
-
-2. SELECCIÓN DE MODELOS BALANCEADA:
-   - Escala: {best_scale}
-   - α: 2.0 (estándar como AIC)
-   - β: 1.0 (balance 50/50 FLOPs vs params)
-
-3. OPTIMIZACIÓN DE ARQUITECTURAS:
-   - Escala: log_params_ratio (eficiencia por parámetro)
-   - α: 2.0 - 5.0
-   - β: 1.0 - 2.0
-
-4. DATASETS GRANDES:
-   - Usar variante 'bic' (α crece con n)
-   - Escala: {best_scale}
-   - β: 0.5 - 1.0
-
-💡 PRÓXIMOS PASOS:
-
-1. Exporta los DataFrames (df_exp1, df_exp2, df_exp3) para análisis detallado
-2. Visualiza la relación α vs β vs ΔFIC para cada escala
-3. Prueba con tus propios datasets y arquitecturas
-4. Ajusta α y β según tus prioridades de deployment
-""")
+        print(f"   - λ balanceado ({avg_lambda:.2f}): Equilibrio log-linear")
+        print(f"   - Sensible a ambos tipos de diferencias")
 
 print(f"\n{'='*100}")
 print("EXPERIMENTOS COMPLETADOS")
 print(f"{'='*100}")
-print(f"\nResultados guardados en DataFrames:")
-print(f"   - df_exp1: Regresión lineal ({len(df_exp1)} configuraciones)")
-print(f"   - df_exp2: Redes neuronales ({len(df_exp2)} configuraciones)")
-print(f"   - df_exp3: Polinomios ({len(df_exp3)} configuraciones)")
-print(f"\nTotal de experimentos ejecutados: {len(df_exp1) + len(df_exp2) + len(df_exp3)}")

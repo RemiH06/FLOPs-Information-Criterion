@@ -85,12 +85,13 @@ class FlopInformationCriterion:
         valid_scales = [
             'log', 'linear_mega', 'log_normalized', 'sqrt_mega',
             'log_params_ratio', 'params_flops_ratio', 'log_plus_linear',
-            'cube_root_kilo', 'log_flops_per_param'
+            'cube_root_kilo', 'log_flops_per_param', 'parametric_log_linear'
         ]
-        if self.flops_scale not in valid_scales:
+        if not (self.flops_scale in valid_scales or 
+        self.flops_scale.startswith('parametric_log_linear_')):
             raise ValueError(
                 f"flops_scale '{self.flops_scale}' no válido. "
-                f"Opciones: {', '.join(valid_scales)}"
+                f"Opciones: {', '.join(valid_scales)} o 'parametric_log_linear_X.X'"
             )
         
         # Cache para resultados
@@ -287,6 +288,42 @@ class FlopInformationCriterion:
                 penalty = alpha * np.log(1 + flops / n_params)
             else:
                 penalty = alpha * np.log(1 + flops)
+
+        elif self.flops_scale == 'parametric_log_linear':
+            # PARAMETRIC: α * (λ * log(FLOPs) + (1-λ) * FLOPs/1e6)
+            # λ controla el balance entre log y linear
+            # Se pasa λ como parte del nombre: 'parametric_log_linear_0.5'
+            
+            # Extraer λ del nombre de la escala
+            parts = self.flops_scale.split('_')
+            if len(parts) == 4 and parts[3].replace('.', '').isdigit():
+                lambda_val = float(parts[3])
+            else:
+                lambda_val = 0.5  # default
+            
+            log_term = np.log(flops) if flops > 0 else 0
+            linear_term = flops / 1e6
+            penalty = alpha * (lambda_val * log_term + (1 - lambda_val) * linear_term)
+
+        elif self.flops_scale.startswith('parametric_log_linear'):
+            # PARAMÉTRICA: α * (λ * log(FLOPs) + (1-λ) * FLOPs/1e6)
+            # λ controla balance entre logarítmico y lineal
+            # Formato: 'parametric_log_linear_0.5' donde 0.5 es λ
+            
+            try:
+                lambda_val = float(self.flops_scale.split('_')[-1])
+                if not (0.0 <= lambda_val <= 1.0):
+                    warnings.warn(f"λ={lambda_val} fuera de rango [0,1], usando 0.5", UserWarning)
+                    lambda_val = 0.5
+            except (ValueError, IndexError):
+                warnings.warn("No se pudo extraer λ, usando 0.5", UserWarning)
+                lambda_val = 0.5
+            
+            log_term = np.log(flops) if flops > 0 else 0.0
+            linear_term = flops / 1e6
+            penalty = alpha * (lambda_val * log_term + (1 - lambda_val) * linear_term)
+
+
         else:
             # Default: log
             penalty = alpha * np.log(flops)
