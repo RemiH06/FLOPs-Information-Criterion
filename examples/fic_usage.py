@@ -1,250 +1,383 @@
-#!/usr/bin/env python3
 """
 FIC (FLOPs Information Criterion) - Ejemplos de Uso
-Versión final con escala paramétrica optimizada
 
-Después de experimentos exhaustivos, se determinó el valor óptimo de λ
-para la fórmula: FIC = -2*log(L) + α*(λ*log(FLOPs) + (1-λ)*FLOPs/1e6) + β*k
+Reconstrucción en formato .py del notebook homónimo (fic_usage.ipynb)
 """
+
+# ===========================================================================
+# 1: Configuración inicial e imports
+# ===========================================================================
+# Configurar paths del proyecto y librerías necesarias
+# Incluye fix para warnings de OpenMP en Windows
 
 import sys
 import os
+
+project_path = r'C:\Users\hecto\OneDrive\Escritorio\Personal\iroFactory\31.FLOPs-Information-Criterion'
+if project_path not in sys.path:
+    sys.path.insert(0, project_path)
+
+# Fix OpenMP warning en Windows
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np
+import flop_counter
 from flop_counter.flop_information_criterion import FlopInformationCriterion
 
+# Configurar seed para reproducibilidad
 np.random.seed(42)
 
-print("="*80)
-print("FIC: FLOPs INFORMATION CRITERION - EJEMPLOS FINALES")
-print("="*80)
-print("\nFórmula refinada:")
-print("  FIC = -2*log(L) + α*(λ*log(FLOPs) + (1-λ)*FLOPs/1e6) + β*k")
-print("\nDonde:")
-print("  α = 2.0  (coeficiente de penalización de FLOPs)")
-print("  β = 1.0  (coeficiente de penalización de parámetros)")
-print("  λ = [VALOR ÓPTIMO DE EXPERIMENTOS]")
-print("="*80)
+print("Configuración completada")
+print(f"FlopInformationCriterion importado correctamente")
 
-# ============================================================================
-# CONFIGURACIÓN: Valor de λ optimizado (ajustar después de experimentos)
-# ============================================================================
-
-# TODO: Actualizar este valor después de ejecutar fic_refining.py
-OPTIMAL_LAMBDA = 0.5  # Placeholder - actualizar con resultado experimental
-
-FLOPS_SCALE = f'parametric_log_linear_{OPTIMAL_LAMBDA}'
-
-print(f"\nUsando λ óptimo: {OPTIMAL_LAMBDA}")
-print(f"Escala: {FLOPS_SCALE}\n")
-
-# ============================================================================
-# FUNCIONES AUXILIARES
-# ============================================================================
+# ===========================================================================
+# 2: Criterios tradicionales de información
+# ===========================================================================
+# Definir funciones para calcular AIC, BIC, HQIC y MDL
+# Estos son los criterios clásicos que NO consideran FLOPs
 
 def calculate_aic(log_likelihood: float, k: int) -> float:
-    """AIC: Penaliza solo por # de parámetros"""
+    """
+    AIC: Akaike Information Criterion
+    AIC = -2*log(L) + 2*k
+    Penaliza solo por número de parámetros
+    """
     return log_likelihood + 2 * k
 
+
 def calculate_bic(log_likelihood: float, k: int, n: int) -> float:
-    """BIC: Penalización crece con tamaño de muestra"""
+    """
+    BIC: Bayesian Information Criterion  
+    BIC = -2*log(L) + k*log(n)
+    Penaliza más que AIC, favorece modelos más simples
+    """
     return log_likelihood + k * np.log(n)
 
-def print_comparison_table(models_results: dict):
-    """Imprime tabla comparativa de criterios"""
+
+def calculate_hqic(log_likelihood: float, k: int, n: int) -> float:
+    """
+    HQIC: Hannan-Quinn Information Criterion
+    HQIC = -2*log(L) + 2*k*log(log(n))
+    Penalización intermedia entre AIC y BIC
+    """
+    return log_likelihood + 2 * k * np.log(np.log(n))
+
+
+def calculate_mdl(log_likelihood: float, k: int, n: int) -> float:
+    """
+    MDL: Minimum Description Length
+    MDL = -log(L) + (k/2)*log(n)
+    Similar a BIC pero con constantes diferentes
+    """
+    return log_likelihood / 2 + (k / 2) * np.log(n)
+
+print("Criterios tradicionales definidos: AIC, BIC, HQIC, MDL")
+
+# ===========================================================================
+# 3: Funciones de visualización y comparación
+# ===========================================================================
+# Funciones auxiliares para mostrar resultados de forma clara
+
+def print_criteria_comparison(name: str, results: dict, show_all: bool = False):
+    """
+    Imprime comparación detallada de criterios para un modelo.
+    Muestra información del modelo y valores de AIC, BIC, FIC.
+    """
     print(f"\n{'='*80}")
-    print("COMPARACIÓN DE CRITERIOS")
+    print(f"MODELO: {name}")
     print(f"{'='*80}")
     
-    print(f"\n{'Modelo':<20} {'Params':<10} {'FLOPs':<15} {'AIC':<12} {'BIC':<12} {'FIC':<12}")
-    print("-" * 80)
+    # Información básica del modelo
+    print(f"\nInformación del Modelo:")
+    print(f"  Parámetros:       {results.get('n_params', 'N/A'):,}")
+    print(f"  FLOPs:            {results.get('flops', 'N/A'):,}")
+    print(f"  Muestras:         {results.get('n_samples', 'N/A')}")
+    print(f"  Log-Likelihood:   {results.get('log_likelihood_term', 'N/A'):.2f}")
     
-    for name, result in models_results.items():
-        print(f"{name:<20} {result['n_params']:<10} {result['flops']:<15,} "
-              f"{result['aic']:<12.2f} {result['bic']:<12.2f} {result['fic']:<12.2f}")
+    if 'accuracy' in results:
+        acc_metric = 'R²' if results.get('accuracy', 0) <= 1 else 'Accuracy'
+        print(f"  {acc_metric}:            {results['accuracy']:.4f}")
     
-    # Mejores según cada criterio
-    print(f"\n{'Criterio':<15} {'Selecciona':<20} {'Valor':<15} {'Razón':<30}")
-    print("-" * 80)
+    # Valores de criterios de información
+    print(f"\nCriterios de Información:")
+    print(f"  {'Criterio':<15} {'Valor':<15} {'Penalización':<20}")
+    print(f"  {'-'*50}")
     
-    aic_best = min(models_results.items(), key=lambda x: x[1]['aic'])
-    bic_best = min(models_results.items(), key=lambda x: x[1]['bic'])
-    fic_best = min(models_results.items(), key=lambda x: x[1]['fic'])
+    if 'aic' in results:
+        print(f"  {'AIC':<15} {results['aic']:<15.2f} {'2k':<20}")
     
-    print(f"{'AIC':<15} {aic_best[0]:<20} {aic_best[1]['aic']:<15.2f} "
-          f"{'Solo considera # params':<30}")
-    print(f"{'BIC':<15} {bic_best[0]:<20} {bic_best[1]['bic']:<15.2f} "
-          f"{'Penaliza más params':<30}")
-    print(f"{'FIC':<15} {fic_best[0]:<20} {fic_best[1]['fic']:<15.2f} "
-          f"{'Considera params + FLOPs':<30}")
+    if 'bic' in results:
+        print(f"  {'BIC':<15} {results['bic']:<15.2f} {'k*log(n)':<20}")
     
-    # Análisis ΔFIC
+    # FIC destacado
+    lambda_val = results.get('lambda', 'N/A')
+    print(f"  {'FIC':<15} {results['fic']:<15.2f} {'α*f(FLOPs) + β*k':<20} <- Incluye FLOPs")
+    
+    # Criterios adicionales opcionales
+    if show_all:
+        if 'hqic' in results:
+            print(f"  {'HQIC':<15} {results['hqic']:<15.2f} {'2k*log(log(n))':<20}")
+        
+        if 'mdl' in results:
+            print(f"  {'MDL':<15} {results['mdl']:<15.2f} {'(k/2)*log(n)':<20}")
+    
+    # Desglose detallado del FIC
+    print(f"\nDesglose del FIC:")
+    print(f"  Ajuste (likelihood):       {results['log_likelihood_term']:.2f}")
+    print(f"  Penalización FLOPs:        {results['flops_penalty']:.2f}")
+    print(f"  Penalización parámetros:   {results['params_penalty']:.2f}")
+    print(f"  Coeficientes: α={results['alpha']:.2f}, β={results['beta']:.2f}, λ={lambda_val}")
+
+
+def compare_all_criteria(models_results: dict, show_all: bool = False):
+    """
+    Compara todos los modelos lado a lado según diferentes criterios.
+    Identifica el mejor modelo según cada criterio y calcula diferencias ΔFIC.
+    """
     print(f"\n{'='*80}")
-    print("ΔFIC: Evidencia contra modelos subóptimos")
+    print("COMPARACIÓN DE MODELOS")
+    print(f"{'='*80}")
+    
+    model_names = list(models_results.keys())
+    criteria = ['AIC', 'BIC', 'FIC']
+    
+    if show_all:
+        criteria.extend(['HQIC', 'MDL'])
+    
+    # Tabla comparativa
+    print(f"\n{'Modelo':<20}", end="")
+    for criterion in criteria:
+        print(f"{criterion:>12}", end="")
+    print()
+    print("-" * (20 + 12 * len(criteria)))
+    
+    for name in model_names:
+        res = models_results[name]
+        print(f"{name:<20}", end="")
+        
+        for criterion in criteria:
+            key = criterion.lower()
+            value = res.get(key, float('nan'))
+            print(f"{value:>12.2f}", end="")
+        print()
+    
+    # Identificar mejor modelo según cada criterio
+    print(f"\n{'Criterio':<15} {'Mejor Modelo':<20} {'Valor':<15}")
+    print("-" * 50)
+    
+    for criterion in criteria:
+        key = criterion.lower()
+        best_name = min(model_names, key=lambda x: models_results[x].get(key, float('inf')))
+        best_value = models_results[best_name][key]
+        print(f"{criterion:<15} {best_name:<20} {best_value:<15.2f}")
+    
+    # Análisis de diferencias ΔFIC
+    print(f"\n{'='*80}")
+    print("ΔFIC: Diferencias respecto al mejor modelo según FIC")
     print(f"{'='*80}")
     
     fic_values = {name: res['fic'] for name, res in models_results.items()}
     best_fic = min(fic_values.values())
     
-    print(f"\n{'Modelo':<20} {'ΔFIC':<15} {'Interpretación':<40}")
-    print("-" * 75)
+    print(f"\n{'Modelo':<20} {'FIC':<15} {'ΔFIC':<15} {'Interpretación':<30}")
+    print("-" * 80)
     
-    for name in sorted(models_results.keys(), key=lambda x: fic_values[x]):
-        delta = fic_values[name] - best_fic
+    for name in sorted(model_names, key=lambda x: fic_values[x]):
+        fic = fic_values[name]
+        delta_fic = fic - best_fic
         
-        if delta < 2:
-            interp = "Sustancialmente equivalente al mejor"
-        elif delta < 10:
-            interp = "Evidencia considerable en contra"
+        # Interpretación de la magnitud de diferencia
+        if delta_fic < 2:
+            interpretation = "Equivalente al mejor"
+        elif delta_fic < 10:
+            interpretation = "Evidencia sustancial contra"
         else:
-            interp = "Evidencia fuerte en contra"
+            interpretation = "Evidencia fuerte contra"
         
-        marker = " ⭐" if delta < 0.01 else ""
-        print(f"{name:<20} {delta:<15.2f} {interp:<40}{marker}")
+        marker = "* MEJOR" if delta_fic < 0.01 else ""
+        
+        print(f"{name:<20} {fic:<15.2f} {delta_fic:<15.2f} {interpretation:<30} {marker}")
 
-# ============================================================================
-# EJEMPLO 1: Regresión - Mismo ajuste, diferentes FLOPs
-# ============================================================================
+print("Funciones de visualización definidas")
 
-print(f"\n\n{'='*80}")
+# ===========================================================================
+# 4: Ejemplo 1 - Regresión Lineal Simple vs Compleja
+# ===========================================================================
+# Demostración: Dos modelos con igual número de parámetros pero diferentes FLOPs
+# Objetivo: Mostrar que AIC/BIC son ciegos a eficiencia computacional
+
+print("\n" + "="*80)
 print("EJEMPLO 1: REGRESIÓN LINEAL")
-print(f"{'='*80}")
-print("\nEscenario: Dos modelos con igual # de parámetros y precisión")
-print("           pero uno tiene operaciones innecesarias (más FLOPs)")
-print("\nObjetivo: Demostrar que FIC detecta ineficiencia computacional")
+print("="*80)
+print("\nEscenario: Dos modelos lineales con igual # de parámetros")
+print("           pero diferente complejidad computacional")
 
-# Datos
+# Generar datos sintéticos de regresión lineal
 n_samples = 100
 X_train = np.random.randn(n_samples, 1)
-y_train = 2.5 * X_train.squeeze() + 1.0 + np.random.randn(n_samples) * 0.5
+true_slope = 2.5
+true_intercept = 1.0
+noise = np.random.randn(n_samples) * 0.5
+y_train = true_slope * X_train.squeeze() + true_intercept + noise
 
-def model_efficient(X):
-    """Modelo eficiente: y = 2.5x + 1.0"""
-    W = np.array([[2.5], [1.0]])
-    X_ext = np.column_stack([X, np.ones(len(X))])
-    return X_ext @ W
+def linear_model_simple(X):
+    """
+    Modelo lineal eficiente: y = ax + b
+    Implementación directa sin operaciones innecesarias
+    """
+    W = np.array([[true_slope], [true_intercept]])
+    X_extended = np.column_stack([X, np.ones(len(X))])
+    return X_extended @ W
 
-def model_inefficient(X):
-    """Mismo resultado pero con operaciones innecesarias"""
-    W = np.array([[2.5], [1.0]])
-    X_ext = np.column_stack([X, np.ones(len(X))])
-    result = X_ext @ W
+def linear_model_complex(X):
+    """
+    Modelo lineal ineficiente: y = ax + b
+    Mismo resultado pero con operaciones costosas innecesarias
+    Simula código mal optimizado o arquitectura redundante
+    """
+    W = np.array([[true_slope], [true_intercept]])
+    X_extended = np.column_stack([X, np.ones(len(X))])
     
-    # Operaciones costosas que no aportan valor
-    for _ in range(5):
-        result = np.exp(np.log(np.abs(result) + 1e-10)) * np.sign(result)
-        result = result @ np.eye(1)
+    # Operaciones adicionales que no aportan valor
+    temp = X_extended @ W
+    temp = np.exp(np.log(temp))  # Identidad costosa: exp(log(x)) = x
+    temp = temp @ np.eye(1)      # Multiplicación innecesaria por identidad
     
-    return result
+    return temp
 
-# Evaluar con FIC
+print("Modelos definidos:")
+print("  - Simple: Implementación directa (~100 FLOPs)")
+print("  - Complejo: Con operaciones innecesarias (~500 FLOPs)")
+
+# ===========================================================================
+# 5: Evaluar modelos de regresión con FIC
+# ===========================================================================
+# Crear calculador de FIC y evaluar ambos modelos
+# Configuración: α=5.0 (penaliza FLOPs), β=0.5 (menos peso a params), λ=0.3
+
+# Inicializar calculador con configuración balanceada
 fic_calc = FlopInformationCriterion(
-    variant='hybrid',  # α=2, β=1
-    flops_scale=FLOPS_SCALE
+    variant='custom',
+    alpha=5.0,      # Penalización fuerte de FLOPs
+    beta=0.5,       # Menos peso a parámetros
+    lambda_balance=0.3  # 30% log, 70% lineal
 )
 
-results_exp1 = {}
+print("Evaluando modelo simple...")
+result_simple = fic_calc.evaluate_model(
+    model=linear_model_simple,
+    X=X_train,
+    y_true=y_train,
+    task='regression',
+    n_params=2,
+    framework='numpy'
+)
 
-for name, model in [("Eficiente", model_efficient), ("Ineficiente", model_inefficient)]:
-    result = fic_calc.evaluate_model(
-        model=model,
-        X=X_train,
-        y_true=y_train,
-        task='regression',
-        n_params=2,
-        framework='numpy'
-    )
-    
-    # Calcular AIC y BIC para comparación
-    result['aic'] = calculate_aic(result['log_likelihood_term'], 2)
-    result['bic'] = calculate_bic(result['log_likelihood_term'], 2, n_samples)
-    
-    results_exp1[name] = result
+print("Evaluando modelo complejo...")
+result_complex = fic_calc.evaluate_model(
+    model=linear_model_complex,
+    X=X_train,
+    y_true=y_train,
+    task='regression',
+    n_params=2,
+    framework='numpy'
+)
 
-print_comparison_table(results_exp1)
+print("Evaluación completada")
 
-print("\n📊 Análisis:")
-flops_eff = results_exp1['Eficiente']['flops']
-flops_ineff = results_exp1['Ineficiente']['flops']
+# ===========================================================================
+# 6: Calcular criterios tradicionales y comparar
+# ===========================================================================
+# Agregar AIC, BIC, HQIC, MDL a los resultados y mostrar comparación
 
-print(f"   FLOPs Eficiente:    {flops_eff:,}")
-print(f"   FLOPs Ineficiente:  {flops_ineff:,}")
+# Calcular criterios tradicionales para ambos modelos
+for name, result in [("Simple", result_simple), ("Complejo", result_complex)]:
+    result['aic'] = calculate_aic(result['log_likelihood_term'], result['n_params'])
+    result['bic'] = calculate_bic(result['log_likelihood_term'], result['n_params'], result['n_samples'])
+    result['hqic'] = calculate_hqic(result['log_likelihood_term'], result['n_params'], result['n_samples'])
+    result['mdl'] = calculate_mdl(result['log_likelihood_term'], result['n_params'], result['n_samples'])
 
-if flops_eff > 0:
-    ratio = flops_ineff / flops_eff
-    print(f"   Ratio:              {ratio:.1f}x")
-else:
-    print(f"   Ratio:              No disponible (contador retorna 0 FLOPs)")
-    print(f"   ⚠️  Advertencia: El contador de FLOPs puede no estar funcionando correctamente")
+# Mostrar resultados individuales
+print_criteria_comparison("Modelo Simple", result_simple, show_all=True)
+print_criteria_comparison("Modelo Complejo", result_complex, show_all=True)
 
-print("\n💡 Conclusión:")
-print("   AIC/BIC: Idénticos (mismo # parámetros, mismo ajuste)")
-print("   FIC:     Detecta y penaliza la ineficiencia computacional")
+# Comparación lado a lado
+models_linear = {
+    'Simple': result_simple,
+    'Complejo': result_complex
+}
+compare_all_criteria(models_linear, show_all=True)
 
-# ============================================================================
-# EJEMPLO 2: Redes Neuronales - Trade-off complejidad vs eficiencia
-# ============================================================================
+# ===========================================================================
+# 7: Ejemplo 2 - Redes Neuronales con diferentes arquitecturas
+# ===========================================================================
+# Demostración: Comparar arquitecturas Wide vs Deep vs Balanced
+# Objetivo: Mostrar que profundidad y ancho afectan FLOPs diferente
 
-print(f"\n\n{'='*80}")
-print("EJEMPLO 2: ARQUITECTURAS DE REDES NEURONALES")
-print(f"{'='*80}")
-print("\nEscenario: Tres arquitecturas para clasificación con FLOPs muy diferentes")
-print("           - Simple: 2 capas, eficiente")
-print("           - Deep: 5 capas, muchos FLOPs por profundidad")
-print("           - Wide-Deep: 4 capas anchas, máximo FLOPs")
-print("\nObjetivo: Demostrar que FIC distingue arquitecturas por FLOPs, no solo parámetros")
+print("\n" + "="*80)
+print("EJEMPLO 2: REDES NEURONALES - ARQUITECTURAS")
+print("="*80)
+print("\nEscenario: Tres arquitecturas para clasificación multiclase")
+print("           Diferentes trade-offs entre ancho y profundidad")
 
-# Datos
+# Generar datos de clasificación
 n_samples = 200
-X_train = np.random.randn(n_samples, 20)
-y_train = np.random.randint(0, 3, n_samples)
+n_features = 20
+n_classes = 3
+
+X_train = np.random.randn(n_samples, n_features)
+y_train = np.random.randint(0, n_classes, n_samples)
+y_train_onehot = np.eye(n_classes)[y_train]
 
 def softmax(x):
+    """Softmax estable numéricamente para evitar overflow"""
     exp_x = np.exp(x - np.max(x, axis=1, keepdims=True))
     return exp_x / np.sum(exp_x, axis=1, keepdims=True)
 
-def simple_net(X):
-    """20 -> 50 -> 3 (2 capas, ~1,053 parámetros, FLOPs bajos)"""
-    W1 = np.random.randn(20, 50) * 0.01
-    b1 = np.zeros(50)
-    W2 = np.random.randn(50, 3) * 0.01
+print("Datos de clasificación generados:")
+print(f"  Muestras: {n_samples}")
+print(f"  Features: {n_features}")
+print(f"  Clases: {n_classes}")
+
+# ===========================================================================
+# 8: Definir arquitecturas de redes neuronales
+# ===========================================================================
+# Tres diseños diferentes: ancha-poco profunda, profunda-estrecha, balanceada
+
+def wide_shallow_net(X):
+    """
+    Red ancha y poco profunda: 20 -> 100 -> 3
+    Características:
+      - Pocas capas (2)
+      - Muchas neuronas por capa (100 hidden)
+      - ~2,303 parámetros
+      - FLOPs relativamente bajos (pocas operaciones secuenciales)
+    """
+    W1 = np.random.randn(20, 100) * 0.01
+    b1 = np.zeros(100)
+    W2 = np.random.randn(100, 3) * 0.01
     b2 = np.zeros(3)
     
-    h1 = np.maximum(0, X @ W1 + b1)
+    h1 = np.maximum(0, X @ W1 + b1)  # ReLU
     logits = h1 @ W2 + b2
     return softmax(logits)
 
-def deep_net(X):
-    """20 -> 25 -> 25 -> 25 -> 25 -> 3 (5 capas, ~1,728 parámetros, FLOPs medios-altos)"""
-    W1 = np.random.randn(20, 25) * 0.01
-    b1 = np.zeros(25)
-    W2 = np.random.randn(25, 25) * 0.01
-    b2 = np.zeros(25)
-    W3 = np.random.randn(25, 25) * 0.01
-    b3 = np.zeros(25)
-    W4 = np.random.randn(25, 25) * 0.01
-    b4 = np.zeros(25)
-    W5 = np.random.randn(25, 3) * 0.01
-    b5 = np.zeros(3)
-    
-    h1 = np.maximum(0, X @ W1 + b1)
-    h2 = np.maximum(0, h1 @ W2 + b2)
-    h3 = np.maximum(0, h2 @ W3 + b3)
-    h4 = np.maximum(0, h3 @ W4 + b4)
-    logits = h4 @ W5 + b5
-    return softmax(logits)
-
-def wide_deep_net(X):
-    """20 -> 80 -> 60 -> 40 -> 3 (4 capas anchas, ~6,343 parámetros, FLOPs muy altos)"""
-    W1 = np.random.randn(20, 80) * 0.01
-    b1 = np.zeros(80)
-    W2 = np.random.randn(80, 60) * 0.01
-    b2 = np.zeros(60)
-    W3 = np.random.randn(60, 40) * 0.01
-    b3 = np.zeros(40)
-    W4 = np.random.randn(40, 3) * 0.01
+def deep_narrow_net(X):
+    """
+    Red profunda y estrecha: 20 -> 30 -> 30 -> 30 -> 3
+    Características:
+      - Muchas capas (4)
+      - Pocas neuronas por capa (30 hidden)
+      - ~2,523 parámetros
+      - FLOPs altos (muchas operaciones secuenciales)
+    """
+    W1 = np.random.randn(20, 30) * 0.01
+    b1 = np.zeros(30)
+    W2 = np.random.randn(30, 30) * 0.01
+    b2 = np.zeros(30)
+    W3 = np.random.randn(30, 30) * 0.01
+    b3 = np.zeros(30)
+    W4 = np.random.randn(30, 3) * 0.01
     b4 = np.zeros(3)
     
     h1 = np.maximum(0, X @ W1 + b1)
@@ -253,13 +386,51 @@ def wide_deep_net(X):
     logits = h3 @ W4 + b4
     return softmax(logits)
 
-results_exp2 = {}
+def balanced_net(X):
+    """
+    Red balanceada: 20 -> 50 -> 25 -> 3
+    Características:
+      - Capas intermedias (3)
+      - Neuronas intermedias (50, 25)
+      - ~2,353 parámetros
+      - FLOPs medios (balance profundidad/ancho)
+    """
+    W1 = np.random.randn(20, 50) * 0.01
+    b1 = np.zeros(50)
+    W2 = np.random.randn(50, 25) * 0.01
+    b2 = np.zeros(25)
+    W3 = np.random.randn(25, 3) * 0.01
+    b3 = np.zeros(3)
+    
+    h1 = np.maximum(0, X @ W1 + b1)
+    h2 = np.maximum(0, h1 @ W2 + b2)
+    logits = h2 @ W3 + b3
+    return softmax(logits)
+
+# Calcular número exacto de parámetros
+n_params_wide = (20*100 + 100) + (100*3 + 3)  # 2,303
+n_params_deep = (20*30 + 30) + (30*30 + 30) + (30*30 + 30) + (30*3 + 3)  # 2,523
+n_params_balanced = (20*50 + 50) + (50*25 + 25) + (25*3 + 3)  # 2,353
+
+print("Arquitecturas definidas:")
+print(f"  Wide-Shallow: {n_params_wide:,} parámetros")
+print(f"  Deep-Narrow:  {n_params_deep:,} parámetros")
+print(f"  Balanced:     {n_params_balanced:,} parámetros")
+
+# ===========================================================================
+# 9: Evaluar y comparar redes neuronales
+# ===========================================================================
+# Evaluar las tres arquitecturas y compararlas con todos los criterios
+
+results_nn = {}
 
 for name, model, n_params in [
-    ("Simple", simple_net, 1053),
-    ("Deep", deep_net, 1728),
-    ("Wide-Deep", wide_deep_net, 6343)
+    ("Wide-Shallow", wide_shallow_net, n_params_wide),
+    ("Deep-Narrow", deep_narrow_net, n_params_deep),
+    ("Balanced", balanced_net, n_params_balanced)
 ]:
+    print(f"\nEvaluando: {name}...")
+    
     result = fic_calc.evaluate_model(
         model=model,
         X=X_train,
@@ -269,154 +440,117 @@ for name, model, n_params in [
         framework='numpy'
     )
     
+    # Agregar criterios tradicionales
     result['aic'] = calculate_aic(result['log_likelihood_term'], n_params)
     result['bic'] = calculate_bic(result['log_likelihood_term'], n_params, n_samples)
+    result['hqic'] = calculate_hqic(result['log_likelihood_term'], n_params, n_samples)
+    result['mdl'] = calculate_mdl(result['log_likelihood_term'], n_params, n_samples)
     
-    results_exp2[name] = result
+    results_nn[name] = result
+    
+    print_criteria_comparison(name, result, show_all=False)
 
-print_comparison_table(results_exp2)
+# Comparación completa
+compare_all_criteria(results_nn, show_all=False)
 
-print("\n📊 Análisis de arquitecturas:")
-for name in ["Simple", "Deep", "Wide-Deep"]:
-    r = results_exp2[name]
-    flops_per_param = r['flops'] / r['n_params'] if r['n_params'] > 0 else 0
-    print(f"\n   {name}:")
-    print(f"      Parámetros:  {r['n_params']:,}")
-    print(f"      FLOPs:       {r['flops']:,}")
-    print(f"      FLOPs/param: {flops_per_param:.1f}")
-    print(f"      Accuracy:    {r['accuracy']:.3f}")
+# ===========================================================================
+# 10: Ejemplo 3 - CNNs en PyTorch
+# ===========================================================================
+# Demostración: Redes convolucionales simples vs profundas
+# Objetivo: Mostrar FIC en modelos de PyTorch reales
 
-print("\n💡 Conclusión:")
-print("   AIC:  Prefiere Simple (menos parámetros)")
-print("   BIC:  Similar a AIC, también prefiere Simple")
-print("   FIC:  Considera parámetros Y FLOPs")
-print("         - Simple: Pocos params, pocos FLOPs → eficiente")
-print("         - Deep: Params medios, FLOPs medios-altos (profundidad)")
-print("         - Wide-Deep: Muchos params, muchos FLOPs → costoso")
-print("         FIC penaliza Wide-Deep más que AIC/BIC por su alto costo computacional")
+print("\n" + "="*80)
+print("EJEMPLO 3: REDES CONVOLUCIONALES (PyTorch)")
+print("="*80)
+print("\nEscenario: CNNs con diferente profundidad")
+print("           Comparar costo de convoluciones")
 
-# ============================================================================
-# EJEMPLO 3: Polinomios - Detección de overfitting y complejidad
-# ============================================================================
+import torch
+import torch.nn as nn
 
-print(f"\n\n{'='*80}")
-print("EJEMPLO 3: REGRESIÓN POLINOMIAL")
-print(f"{'='*80}")
-print("\nEscenario: Datos generados por función cuadrática")
-print("           Ajustamos polinomios de grado 1, 2, 3, 5 y 10")
-print("\nObjetivo: Demostrar que FIC detecta overfitting considerando FLOPs")
+class SimpleCNN(nn.Module):
+    """
+    CNN simple: 2 capas convolucionales + clasificador
+    Arquitectura: Conv(3->16) -> Pool -> Conv(16->32) -> Pool -> FC(2048->10)
+    """
+    def __init__(self):
+        super().__init__()
+        self.conv1 = nn.Conv2d(3, 16, 3, padding=1)
+        self.conv2 = nn.Conv2d(16, 32, 3, padding=1)
+        self.fc = nn.Linear(32 * 8 * 8, 10)
+    
+    def forward(self, x):
+        x = torch.relu(self.conv1(x))
+        x = torch.max_pool2d(x, 2)
+        x = torch.relu(self.conv2(x))
+        x = torch.max_pool2d(x, 2)
+        x = x.view(x.size(0), -1)
+        x = self.fc(x)
+        return torch.softmax(x, dim=1)
 
-# Datos con relación cuadrática verdadera
-n_samples = 150
-X_poly = np.random.randn(n_samples, 1)
-y_poly = 2.0 * X_poly.squeeze()**2 + 1.5 * X_poly.squeeze() + 1.0
-y_poly += np.random.randn(n_samples) * 0.5
+class DeepCNN(nn.Module):
+    """
+    CNN profunda: 4 capas convolucionales + clasificador
+    Arquitectura: Conv(3->16) -> Pool -> Conv(16->32) -> Pool -> 
+                  Conv(32->64) -> Pool -> Conv(64->64) -> Pool -> FC(256->10)
+    Más profunda = Más FLOPs
+    """
+    def __init__(self):
+        super().__init__()
+        self.conv1 = nn.Conv2d(3, 16, 3, padding=1)
+        self.conv2 = nn.Conv2d(16, 32, 3, padding=1)
+        self.conv3 = nn.Conv2d(32, 64, 3, padding=1)
+        self.conv4 = nn.Conv2d(64, 64, 3, padding=1)
+        self.fc = nn.Linear(64 * 2 * 2, 10)
+    
+    def forward(self, x):
+        x = torch.relu(self.conv1(x))
+        x = torch.max_pool2d(x, 2)
+        x = torch.relu(self.conv2(x))
+        x = torch.max_pool2d(x, 2)
+        x = torch.relu(self.conv3(x))
+        x = torch.max_pool2d(x, 2)
+        x = torch.relu(self.conv4(x))
+        x = torch.max_pool2d(x, 2)
+        x = x.view(x.size(0), -1)
+        x = self.fc(x)
+        return torch.softmax(x, dim=1)
 
-def poly_model(degree):
-    """Genera modelo polinomial de grado específico"""
-    def model(X):
-        X_features = np.column_stack([X**i for i in range(degree + 1)])
-        coeffs = np.random.randn(degree + 1) * 0.1
-        coeffs[0] = 1.0
-        if degree >= 1:
-            coeffs[1] = 1.5
-        if degree >= 2:
-            coeffs[2] = 2.0
-        return X_features @ coeffs
-    return model
+# Datos dummy para evaluación
+X_torch = torch.randn(16, 3, 32, 32)  # 16 imágenes 32x32 RGB
+y_torch = torch.randint(0, 10, (16,))  # 10 clases
 
-results_exp3 = {}
+simple_cnn = SimpleCNN()
+deep_cnn = DeepCNN()
 
-for degree in [1, 2, 3, 5, 10]:
-    name = f"Poly{degree}"
-    model = poly_model(degree)
+print("CNNs definidas:")
+print(f"  SimpleCNN: 2 capas conv + 1 FC")
+print(f"  DeepCNN:   4 capas conv + 1 FC")
+
+# ===========================================================================
+# 11: Evaluar CNNs de PyTorch
+# ===========================================================================
+# Evaluar ambas CNNs con FIC y mostrar diferencias
+
+results_torch = {}
+
+for name, model in [("SimpleCNN", simple_cnn), ("DeepCNN", deep_cnn)]:
+    print(f"\nEvaluando: {name}...")
     
     result = fic_calc.evaluate_model(
         model=model,
-        X=X_poly,
-        y_true=y_poly,
-        task='regression',
-        n_params=degree + 1,
-        framework='numpy'
+        X=X_torch,
+        y_true=y_torch.numpy(),
+        task='classification',
+        framework='torch'
     )
     
-    result['aic'] = calculate_aic(result['log_likelihood_term'], degree + 1)
-    result['bic'] = calculate_bic(result['log_likelihood_term'], degree + 1, n_samples)
+    # Agregar criterios tradicionales
+    n_params = result['n_params']
+    result['aic'] = calculate_aic(result['log_likelihood_term'], n_params)
+    result['bic'] = calculate_bic(result['log_likelihood_term'], n_params, 16)
     
-    results_exp3[name] = result
+    results_torch[name] = result
+    print_criteria_comparison(name, result, show_all=False)
 
-print_comparison_table(results_exp3)
-
-print("\n📊 Análisis por grado:")
-for degree in [1, 2, 3, 5, 10]:
-    name = f"Poly{degree}"
-    r = results_exp3[name]
-    print(f"\n   Grado {degree}:")
-    print(f"      R²:         {r['accuracy']:.4f}")
-    print(f"      Parámetros: {r['n_params']}")
-    print(f"      FLOPs:      {r['flops']:,}")
-
-print("\n💡 Conclusión:")
-print("   Poly2 (cuadrático) es el modelo verdadero")
-print("   AIC/BIC: Detectan overfitting solo vía # de parámetros")
-print("   FIC:     Penaliza además el costo computacional del overfitting")
-print("            Poly10 no solo tiene más parámetros, también más FLOPs")
-
-# ============================================================================
-# RESUMEN FINAL
-# ============================================================================
-
-print(f"\n\n{'='*80}")
-print("RESUMEN: CUÁNDO USAR FIC")
-print(f"{'='*80}")
-
-print("""
-✅ FIC es superior a AIC/BIC cuando:
-
-1. DEPLOYMENT REAL
-   - Modelos se ejecutarán en producción
-   - Latencia y throughput son importantes
-   - Hardware tiene limitaciones (móvil, edge, IoT)
-
-2. ARQUITECTURAS COMPLEJAS
-   - Comparando redes con diferentes profundidades
-   - Trade-off entre ancho y profundidad
-   - Operaciones costosas (attention, convolutions)
-
-3. EFICIENCIA COMPUTACIONAL
-   - Distinguir modelos con igual # parámetros
-   - Detectar operaciones innecesarias
-   - Optimización de recursos
-
-📊 AIC/BIC siguen siendo útiles para:
-   - Análisis estadístico tradicional
-   - Modelos donde FLOPs no importan
-   - Cuando solo interesa complejidad paramétrica
-
-🎯 FÓRMULA FINAL DEL FIC:
-   
-   FIC = -2*log(L) + α*(λ*log(FLOPs) + (1-λ)*FLOPs/1e6) + β*k
-   
-   Donde:
-   - L: verosimilitud del modelo
-   - α: peso de penalización de FLOPs (recomendado: 2.0)
-   - λ: balance log/linear (determinado experimentalmente)
-   - β: peso de penalización de parámetros (recomendado: 1.0)
-   - k: número de parámetros
-
-💡 INTERPRETACIÓN DE ΔFIC:
-   
-   ΔFIC < 2:   Modelos prácticamente equivalentes
-   2 < ΔFIC < 10:  Evidencia considerable contra el modelo
-   ΔFIC > 10:  Evidencia fuerte contra el modelo
-
-🚀 PRÓXIMOS PASOS:
-   
-   1. Ejecutar fic_refining.py para determinar λ óptimo
-   2. Actualizar OPTIMAL_LAMBDA en este archivo
-   3. Usar FIC para selección de modelos en tus proyectos
-""")
-
-print(f"\n{'='*80}")
-print("Ejemplos completados exitosamente")
-print(f"{'='*80}\n")
+compare_all_criteria(results_torch, show_all=False)
