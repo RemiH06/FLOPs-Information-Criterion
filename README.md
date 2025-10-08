@@ -7,17 +7,20 @@
 ██╔══╝  ██║     ██║   ██║██╔═══╝     ██║██║     
 ██║     ███████╗╚██████╔╝██║         ██║╚██████╗
 ╚═╝     ╚══════╝ ╚═════╝ ╚═╝         ╚═╝ ╚═════╝
-       by Hex (@RemiH06)          version 0.2.0
+       by Hex (@RemiH06)          version 0.3.0
 ```
 
 ![Maintained](https://img.shields.io/badge/Maintained%3F-yes-green.svg?style=for-the-badge)
 ![MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge)
 
 ### General Description
-I don't really trust AIC or BIC for some of my models. I understand there are many other criterions out there but I rather create my own for a new kind of comparison that has not been conceived. It makes a count of FLOPS and uses them in some formula I will come up with to determine models and even code efficiency in a fusion between statistics and IT.
+I don't really trust AIC or BIC for some of my models. I understand there are many other criterions out there but I rather create my own for a new kind of comparison that has not been conceived. It makes a count of FLOPS and uses them in some formula I will come up with to determine models and even code efficiency in a fusion between statistics and compsci.
+
+The final version is a library made with only python implementing a not so huge math investigation.
 
 ```diff
-- This is not concluded, might take a while if I don't hurry.
+- This project is currently in testing phase
+- Lib functions work with a few libraries.
 ```
 
 ## Installation
@@ -27,3 +30,5 @@ I don't really trust AIC or BIC for some of my models. I understand there are ma
 ## Features
 
 - For now, you can compare models through FLOPs within basic_usage.py
+- Also take a look for more advanced usages within fic_usages.ipynb
+- Feel free to stalk the not so beautiful refining method I slothfuly came up with
