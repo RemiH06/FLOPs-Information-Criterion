@@ -20,7 +20,7 @@ The final version is a library made with only python implementing a not so huge 
 
 ```diff
 - This project is currently in testing phase
-- Lib functions work with a few libraries.
+- Lib functions work with a few libraries
 ```
 
 ## Installation
