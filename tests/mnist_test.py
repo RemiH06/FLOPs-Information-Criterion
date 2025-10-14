@@ -1,11 +1,7 @@
 #!/usr/bin/env python3
 """
-MNIST Classification: Comparación de 3 enfoques diferentes
-1. MLP (Multi-Layer Perceptron) - Baseline denso
-2. CNN (Convolutional Neural Network) - LeNet-like con BatchNorm
-3. HOG + SVM (Clásico) - Histograms of Oriented Gradients + Linear SVM
-
-Objetivo: Entrenar cada modelo y luego evaluar con AIC, BIC y FIC
+MNIST Classification: Comparación exhaustiva de 10 enfoques diferentes
+Objetivo: Demostrar la robustez del FIC en un problema real con múltiples arquitecturas
 """
 
 import sys
@@ -21,11 +17,14 @@ from sklearn.svm import LinearSVC
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
 from sklearn.datasets import fetch_openml
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.neighbors import KNeighborsClassifier
 import time
 
-print("="*80)
-print("MNIST: COMPARACIÓN DE 3 ENFOQUES DE CLASIFICACIÓN")
-print("="*80)
+print("="*100)
+print("MNIST: COMPARACIÓN EXHAUSTIVA DE 10 ENFOQUES")
+print("="*100)
 
 # ============================================================================
 # CONFIGURACIÓN
@@ -46,11 +45,10 @@ print(f"  Learning rate: {LEARNING_RATE}")
 # CARGAR DATOS
 # ============================================================================
 
-print("\n" + "="*80)
+print("\n" + "="*100)
 print("CARGANDO DATOS MNIST")
-print("="*80)
+print("="*100)
 
-# Cargar MNIST usando sklearn (evita problema de torchvision)
 print("Descargando MNIST desde OpenML...")
 mnist = fetch_openml('mnist_784', version=1, parser='auto')
 
@@ -60,7 +58,7 @@ y = mnist.target.to_numpy().astype(np.int64)
 # Normalizar
 X = X / 255.0
 
-# Split train/test (primeros 60000 train, resto test)
+# Split train/test
 X_train = X[:60000]
 y_train = y[:60000]
 X_test = X[60000:]
@@ -85,29 +83,224 @@ y_test_torch = torch.LongTensor(y_test)
 # DataLoaders
 train_dataset = TensorDataset(X_train_torch, y_train_torch)
 test_dataset = TensorDataset(X_test_torch, y_test_torch)
-
 train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
 test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False)
 
 # ============================================================================
-# MODELO 1: MLP (Multi-Layer Perceptron)
+# FUNCIONES AUXILIARES
 # ============================================================================
 
-print("\n" + "="*80)
-print("MODELO 1: MLP (Multi-Layer Perceptron)")
-print("="*80)
-print("\nArquitectura: 784 -> 512 -> 256 -> 10")
-print("Características: Denso, Dropout 0.2, ReLU")
+def count_parameters(model):
+    """Cuenta parámetros entrenables"""
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
-class MLP(nn.Module):
+def train_pytorch_model(model, train_loader, epochs, lr):
+    """Entrena un modelo de PyTorch"""
+    optimizer = optim.Adam(model.parameters(), lr=lr)
+    criterion = nn.CrossEntropyLoss()
+    
+    model.train()
+    for epoch in range(epochs):
+        for batch_idx, (data, target) in enumerate(train_loader):
+            data, target = data.to(DEVICE), target.to(DEVICE)
+            
+            optimizer.zero_grad()
+            output = model(data)
+            loss = criterion(output, target)
+            loss.backward()
+            optimizer.step()
+    
+    return model
+
+def evaluate_pytorch_model(model, test_loader):
+    """Evalúa un modelo de PyTorch"""
+    model.eval()
+    correct = 0
+    total = 0
+    
+    with torch.no_grad():
+        for data, target in test_loader:
+            data, target = data.to(DEVICE), target.to(DEVICE)
+            output = model(data)
+            _, predicted = output.max(1)
+            total += target.size(0)
+            correct += predicted.eq(target).sum().item()
+    
+    return 100. * correct / total
+
+# ============================================================================
+# MODELO 1: Regresión Logística (Baseline clásico)
+# ============================================================================
+
+print("\n" + "="*100)
+print("MODELO 1: REGRESIÓN LOGÍSTICA")
+print("="*100)
+print("Características: Lineal, sin capas ocultas, baseline clásico")
+
+logreg_start = time.time()
+
+logreg_model = LogisticRegression(max_iter=100, random_state=42, verbose=0)
+logreg_model.fit(X_train, y_train)
+
+logreg_train_time = time.time() - logreg_start
+logreg_predictions = logreg_model.predict(X_test)
+logreg_accuracy = 100. * np.mean(logreg_predictions == y_test)
+
+logreg_params = logreg_model.coef_.size + logreg_model.intercept_.size
+
+print(f"\nResultados:")
+print(f"  Test Accuracy: {logreg_accuracy:.2f}%")
+print(f"  Parámetros: {logreg_params:,}")
+print(f"  Training Time: {logreg_train_time:.1f}s")
+
+# ============================================================================
+# MODELO 2: K-Nearest Neighbors
+# ============================================================================
+
+print("\n" + "="*100)
+print("MODELO 2: K-NEAREST NEIGHBORS (k=5)")
+print("="*100)
+print("Características: No paramétrico, basado en distancia")
+
+knn_start = time.time()
+
+# Usar subset para acelerar
+subset_size = 10000
+knn_model = KNeighborsClassifier(n_neighbors=5, n_jobs=-1)
+knn_model.fit(X_train[:subset_size], y_train[:subset_size])
+
+knn_train_time = time.time() - knn_start
+knn_predictions = knn_model.predict(X_test)
+knn_accuracy = 100. * np.mean(knn_predictions == y_test)
+
+knn_params = 0  # KNN no tiene parámetros tradicionales
+
+print(f"\nResultados:")
+print(f"  Test Accuracy: {knn_accuracy:.2f}%")
+print(f"  Parámetros: {knn_params} (no paramétrico)")
+print(f"  Training Time: {knn_train_time:.1f}s")
+print(f"  Nota: Entrenado con subset de {subset_size} muestras")
+
+# ============================================================================
+# MODELO 3: Random Forest
+# ============================================================================
+
+print("\n" + "="*100)
+print("MODELO 3: RANDOM FOREST (100 árboles)")
+print("="*100)
+print("Características: Ensemble, robusto, interpretable")
+
+rf_start = time.time()
+
+rf_model = RandomForestClassifier(n_estimators=100, max_depth=20, random_state=42, n_jobs=-1)
+rf_model.fit(X_train, y_train)
+
+rf_train_time = time.time() - rf_start
+rf_predictions = rf_model.predict(X_test)
+rf_accuracy = 100. * np.mean(rf_predictions == y_test)
+
+# Estimación de parámetros: nodos × árboles
+rf_params = sum(tree.tree_.node_count for tree in rf_model.estimators_)
+
+print(f"\nResultados:")
+print(f"  Test Accuracy: {rf_accuracy:.2f}%")
+print(f"  Parámetros: {rf_params:,} (nodos totales)")
+print(f"  Training Time: {rf_train_time:.1f}s")
+
+# ============================================================================
+# MODELO 4: PCA + SVM
+# ============================================================================
+
+print("\n" + "="*100)
+print("MODELO 4: PCA (150 componentes) + LINEAR SVM")
+print("="*100)
+print("Características: Reducción dimensionalidad + clasificador lineal")
+
+pca_svm_start = time.time()
+
+# PCA
+pca = PCA(n_components=150, random_state=42)
+X_train_pca = pca.fit_transform(X_train)
+X_test_pca = pca.transform(X_test)
+
+# SVM
+scaler = StandardScaler()
+X_train_pca_scaled = scaler.fit_transform(X_train_pca)
+X_test_pca_scaled = scaler.transform(X_test_pca)
+
+svm_model = LinearSVC(C=1.0, max_iter=1000, random_state=42)
+svm_model.fit(X_train_pca_scaled, y_train)
+
+pca_svm_train_time = time.time() - pca_svm_start
+pca_svm_predictions = svm_model.predict(X_test_pca_scaled)
+pca_svm_accuracy = 100. * np.mean(pca_svm_predictions == y_test)
+
+pca_svm_params = svm_model.coef_.size + svm_model.intercept_.size
+
+print(f"\nResultados:")
+print(f"  Test Accuracy: {pca_svm_accuracy:.2f}%")
+print(f"  Parámetros: {pca_svm_params:,}")
+print(f"  Training Time: {pca_svm_train_time:.1f}s")
+print(f"  Varianza explicada: {pca.explained_variance_ratio_.sum()*100:.1f}%")
+
+# ============================================================================
+# MODELO 5: MLP Tiny (muy pequeño)
+# ============================================================================
+
+print("\n" + "="*100)
+print("MODELO 5: MLP TINY (784 -> 64 -> 10)")
+print("="*100)
+print("Características: Red mínima, ultra eficiente")
+
+class MLPTiny(nn.Module):
     def __init__(self):
-        super(MLP, self).__init__()
+        super(MLPTiny, self).__init__()
         self.flatten = nn.Flatten()
-        self.fc1 = nn.Linear(28*28, 512)
+        self.fc1 = nn.Linear(784, 64)
+        self.dropout = nn.Dropout(0.2)
+        self.fc2 = nn.Linear(64, 10)
+        
+    def forward(self, x):
+        x = self.flatten(x)
+        x = torch.relu(self.fc1(x))
+        x = self.dropout(x)
+        x = self.fc2(x)
+        return x
+
+mlp_tiny_model = MLPTiny().to(DEVICE)
+mlp_tiny_params = count_parameters(mlp_tiny_model)
+
+print(f"\nParámetros: {mlp_tiny_params:,}")
+print("Entrenando...")
+
+mlp_tiny_start = time.time()
+train_pytorch_model(mlp_tiny_model, train_loader, EPOCHS, LEARNING_RATE)
+mlp_tiny_train_time = time.time() - mlp_tiny_start
+
+mlp_tiny_accuracy = evaluate_pytorch_model(mlp_tiny_model, test_loader)
+
+print(f"\nResultados:")
+print(f"  Test Accuracy: {mlp_tiny_accuracy:.2f}%")
+print(f"  Training Time: {mlp_tiny_train_time:.1f}s")
+
+# ============================================================================
+# MODELO 6: MLP Medium (balanceado)
+# ============================================================================
+
+print("\n" + "="*100)
+print("MODELO 6: MLP MEDIUM (784 -> 256 -> 128 -> 10)")
+print("="*100)
+print("Características: Balance entre tamaño y capacidad")
+
+class MLPMedium(nn.Module):
+    def __init__(self):
+        super(MLPMedium, self).__init__()
+        self.flatten = nn.Flatten()
+        self.fc1 = nn.Linear(784, 256)
         self.dropout1 = nn.Dropout(0.2)
-        self.fc2 = nn.Linear(512, 256)
+        self.fc2 = nn.Linear(256, 128)
         self.dropout2 = nn.Dropout(0.2)
-        self.fc3 = nn.Linear(256, 10)
+        self.fc3 = nn.Linear(128, 10)
         
     def forward(self, x):
         x = self.flatten(x)
@@ -118,531 +311,442 @@ class MLP(nn.Module):
         x = self.fc3(x)
         return x
 
-def count_parameters(model):
-    """Cuenta parámetros entrenables"""
-    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+mlp_medium_model = MLPMedium().to(DEVICE)
+mlp_medium_params = count_parameters(mlp_medium_model)
 
-# Inicializar MLP
-mlp_model = MLP().to(DEVICE)
-mlp_params = count_parameters(mlp_model)
+print(f"\nParámetros: {mlp_medium_params:,}")
+print("Entrenando...")
 
-print(f"\nParámetros entrenables: {mlp_params:,}")
+mlp_medium_start = time.time()
+train_pytorch_model(mlp_medium_model, train_loader, EPOCHS, LEARNING_RATE)
+mlp_medium_train_time = time.time() - mlp_medium_start
 
-# Entrenamiento
-print("\nEntrenando MLP...")
-mlp_optimizer = optim.Adam(mlp_model.parameters(), lr=LEARNING_RATE)
-mlp_criterion = nn.CrossEntropyLoss()
+mlp_medium_accuracy = evaluate_pytorch_model(mlp_medium_model, test_loader)
 
-mlp_start_time = time.time()
-
-for epoch in range(EPOCHS):
-    mlp_model.train()
-    train_loss = 0
-    correct = 0
-    total = 0
-    
-    for batch_idx, (data, target) in enumerate(train_loader):
-        data, target = data.to(DEVICE), target.to(DEVICE)
-        
-        mlp_optimizer.zero_grad()
-        output = mlp_model(data)
-        loss = mlp_criterion(output, target)
-        loss.backward()
-        mlp_optimizer.step()
-        
-        train_loss += loss.item()
-        _, predicted = output.max(1)
-        total += target.size(0)
-        correct += predicted.eq(target).sum().item()
-    
-    train_acc = 100. * correct / total
-    avg_loss = train_loss / len(train_loader)
-    
-    print(f"  Epoch {epoch+1}/{EPOCHS} - Loss: {avg_loss:.4f}, Acc: {train_acc:.2f}%")
-
-mlp_train_time = time.time() - mlp_start_time
-
-# Evaluación
-print("\nEvaluando MLP...")
-mlp_model.eval()
-test_loss = 0
-correct = 0
-total = 0
-
-with torch.no_grad():
-    for data, target in test_loader:
-        data, target = data.to(DEVICE), target.to(DEVICE)
-        output = mlp_model(data)
-        test_loss += mlp_criterion(output, target).item()
-        _, predicted = output.max(1)
-        total += target.size(0)
-        correct += predicted.eq(target).sum().item()
-
-mlp_test_acc = 100. * correct / total
-mlp_test_loss = test_loss / len(test_loader)
-
-print(f"\nResultados MLP:")
-print(f"  Test Accuracy: {mlp_test_acc:.2f}%")
-print(f"  Test Loss: {mlp_test_loss:.4f}")
-print(f"  Training Time: {mlp_train_time:.1f}s")
+print(f"\nResultados:")
+print(f"  Test Accuracy: {mlp_medium_accuracy:.2f}%")
+print(f"  Training Time: {mlp_medium_train_time:.1f}s")
 
 # ============================================================================
-# MODELO 2: CNN (Convolutional Neural Network)
+# MODELO 7: MLP Large (sobredimensionado)
 # ============================================================================
 
-print("\n" + "="*80)
-print("MODELO 2: CNN (LeNet-like con BatchNorm)")
-print("="*80)
-print("\nArquitectura:")
-print("  Conv1: 1->32 (3x3) -> BN -> ReLU -> MaxPool(2x2)")
-print("  Conv2: 32->64 (3x3) -> BN -> ReLU -> MaxPool(2x2)")
-print("  FC: 1600 -> 128 -> 10")
+print("\n" + "="*100)
+print("MODELO 7: MLP LARGE (784 -> 512 -> 512 -> 256 -> 10)")
+print("="*100)
+print("Características: Muy grande, posible overfitting")
 
-class CNN(nn.Module):
+class MLPLarge(nn.Module):
     def __init__(self):
-        super(CNN, self).__init__()
-        # Bloque 1: Conv -> BN -> ReLU -> MaxPool
-        self.conv1 = nn.Conv2d(1, 32, kernel_size=3, padding=1)
-        self.bn1 = nn.BatchNorm2d(32)
-        self.pool1 = nn.MaxPool2d(2, 2)
-        
-        # Bloque 2: Conv -> BN -> ReLU -> MaxPool
-        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
-        self.bn2 = nn.BatchNorm2d(64)
-        self.pool2 = nn.MaxPool2d(2, 2)
-        
-        # Clasificador denso
+        super(MLPLarge, self).__init__()
         self.flatten = nn.Flatten()
+        self.fc1 = nn.Linear(784, 512)
+        self.dropout1 = nn.Dropout(0.3)
+        self.fc2 = nn.Linear(512, 512)
+        self.dropout2 = nn.Dropout(0.3)
+        self.fc3 = nn.Linear(512, 256)
+        self.dropout3 = nn.Dropout(0.3)
+        self.fc4 = nn.Linear(256, 10)
+        
+    def forward(self, x):
+        x = self.flatten(x)
+        x = torch.relu(self.fc1(x))
+        x = self.dropout1(x)
+        x = torch.relu(self.fc2(x))
+        x = self.dropout2(x)
+        x = torch.relu(self.fc3(x))
+        x = self.dropout3(x)
+        x = self.fc4(x)
+        return x
+
+mlp_large_model = MLPLarge().to(DEVICE)
+mlp_large_params = count_parameters(mlp_large_model)
+
+print(f"\nParámetros: {mlp_large_params:,}")
+print("Entrenando...")
+
+mlp_large_start = time.time()
+train_pytorch_model(mlp_large_model, train_loader, EPOCHS, LEARNING_RATE)
+mlp_large_train_time = time.time() - mlp_large_start
+
+mlp_large_accuracy = evaluate_pytorch_model(mlp_large_model, test_loader)
+
+print(f"\nResultados:")
+print(f"  Test Accuracy: {mlp_large_accuracy:.2f}%")
+print(f"  Training Time: {mlp_large_train_time:.1f}s")
+
+# ============================================================================
+# MODELO 8: CNN Tiny (mínima convolucional)
+# ============================================================================
+
+print("\n" + "="*100)
+print("MODELO 8: CNN TINY (1 capa conv)")
+print("="*100)
+print("Características: Convolucional mínima, muy eficiente")
+
+class CNNTiny(nn.Module):
+    def __init__(self):
+        super(CNNTiny, self).__init__()
+        self.conv1 = nn.Conv2d(1, 16, 3, padding=1)
+        self.pool = nn.MaxPool2d(2, 2)
+        self.fc = nn.Linear(16 * 14 * 14, 10)
+        
+    def forward(self, x):
+        x = torch.relu(self.conv1(x))
+        x = self.pool(x)
+        x = x.view(x.size(0), -1)
+        x = self.fc(x)
+        return x
+
+cnn_tiny_model = CNNTiny().to(DEVICE)
+cnn_tiny_params = count_parameters(cnn_tiny_model)
+
+print(f"\nParámetros: {cnn_tiny_params:,}")
+print("Entrenando...")
+
+cnn_tiny_start = time.time()
+train_pytorch_model(cnn_tiny_model, train_loader, EPOCHS, LEARNING_RATE)
+cnn_tiny_train_time = time.time() - cnn_tiny_start
+
+cnn_tiny_accuracy = evaluate_pytorch_model(cnn_tiny_model, test_loader)
+
+print(f"\nResultados:")
+print(f"  Test Accuracy: {cnn_tiny_accuracy:.2f}%")
+print(f"  Training Time: {cnn_tiny_train_time:.1f}s")
+
+# ============================================================================
+# MODELO 9: CNN Medium (LeNet-like)
+# ============================================================================
+
+print("\n" + "="*100)
+print("MODELO 9: CNN MEDIUM (2 capas conv con BatchNorm)")
+print("="*100)
+print("Características: LeNet-like moderno, buen balance")
+
+class CNNMedium(nn.Module):
+    def __init__(self):
+        super(CNNMedium, self).__init__()
+        self.conv1 = nn.Conv2d(1, 32, 3, padding=1)
+        self.bn1 = nn.BatchNorm2d(32)
+        self.conv2 = nn.Conv2d(32, 64, 3, padding=1)
+        self.bn2 = nn.BatchNorm2d(64)
+        self.pool = nn.MaxPool2d(2, 2)
         self.fc1 = nn.Linear(64 * 7 * 7, 128)
         self.dropout = nn.Dropout(0.3)
         self.fc2 = nn.Linear(128, 10)
         
     def forward(self, x):
-        # Bloque 1
-        x = self.conv1(x)
-        x = self.bn1(x)
-        x = torch.relu(x)
-        x = self.pool1(x)
-        
-        # Bloque 2
-        x = self.conv2(x)
-        x = self.bn2(x)
-        x = torch.relu(x)
-        x = self.pool2(x)
-        
-        # Clasificador
-        x = self.flatten(x)
+        x = self.pool(torch.relu(self.bn1(self.conv1(x))))
+        x = self.pool(torch.relu(self.bn2(self.conv2(x))))
+        x = x.view(x.size(0), -1)
         x = torch.relu(self.fc1(x))
         x = self.dropout(x)
         x = self.fc2(x)
         return x
 
-# Inicializar CNN
-cnn_model = CNN().to(DEVICE)
-cnn_params = count_parameters(cnn_model)
+cnn_medium_model = CNNMedium().to(DEVICE)
+cnn_medium_params = count_parameters(cnn_medium_model)
 
-print(f"\nParámetros entrenables: {cnn_params:,}")
+print(f"\nParámetros: {cnn_medium_params:,}")
+print("Entrenando...")
 
-# Entrenamiento
-print("\nEntrenando CNN...")
-cnn_optimizer = optim.Adam(cnn_model.parameters(), lr=LEARNING_RATE)
-cnn_criterion = nn.CrossEntropyLoss()
+cnn_medium_start = time.time()
+train_pytorch_model(cnn_medium_model, train_loader, EPOCHS, LEARNING_RATE)
+cnn_medium_train_time = time.time() - cnn_medium_start
 
-cnn_start_time = time.time()
+cnn_medium_accuracy = evaluate_pytorch_model(cnn_medium_model, test_loader)
 
-for epoch in range(EPOCHS):
-    cnn_model.train()
-    train_loss = 0
-    correct = 0
-    total = 0
-    
-    for batch_idx, (data, target) in enumerate(train_loader):
-        data, target = data.to(DEVICE), target.to(DEVICE)
+print(f"\nResultados:")
+print(f"  Test Accuracy: {cnn_medium_accuracy:.2f}%")
+print(f"  Training Time: {cnn_medium_train_time:.1f}s")
+
+# ============================================================================
+# MODELO 10: CNN Deep (muy profunda)
+# ============================================================================
+
+print("\n" + "="*100)
+print("MODELO 10: CNN DEEP (4 capas conv, muy profunda)")
+print("="*100)
+print("Características: Máxima capacidad, posible overkill para MNIST")
+
+class CNNDeep(nn.Module):
+    def __init__(self):
+        super(CNNDeep, self).__init__()
+        self.conv1 = nn.Conv2d(1, 32, 3, padding=1)
+        self.bn1 = nn.BatchNorm2d(32)
+        self.conv2 = nn.Conv2d(32, 64, 3, padding=1)
+        self.bn2 = nn.BatchNorm2d(64)
+        self.conv3 = nn.Conv2d(64, 128, 3, padding=1)
+        self.bn3 = nn.BatchNorm2d(128)
+        self.conv4 = nn.Conv2d(128, 128, 3, padding=1)
+        self.bn4 = nn.BatchNorm2d(128)
+        self.pool = nn.MaxPool2d(2, 2)
+        self.fc1 = nn.Linear(128 * 1 * 1, 256)
+        self.dropout = nn.Dropout(0.4)
+        self.fc2 = nn.Linear(256, 10)
         
-        cnn_optimizer.zero_grad()
-        output = cnn_model(data)
-        loss = cnn_criterion(output, target)
-        loss.backward()
-        cnn_optimizer.step()
-        
-        train_loss += loss.item()
-        _, predicted = output.max(1)
-        total += target.size(0)
-        correct += predicted.eq(target).sum().item()
-    
-    train_acc = 100. * correct / total
-    avg_loss = train_loss / len(train_loader)
-    
-    print(f"  Epoch {epoch+1}/{EPOCHS} - Loss: {avg_loss:.4f}, Acc: {train_acc:.2f}%")
+    def forward(self, x):
+        x = self.pool(torch.relu(self.bn1(self.conv1(x))))
+        x = self.pool(torch.relu(self.bn2(self.conv2(x))))
+        x = self.pool(torch.relu(self.bn3(self.conv3(x))))
+        x = self.pool(torch.relu(self.bn4(self.conv4(x))))
+        x = x.view(x.size(0), -1)
+        x = torch.relu(self.fc1(x))
+        x = self.dropout(x)
+        x = self.fc2(x)
+        return x
 
-cnn_train_time = time.time() - cnn_start_time
+cnn_deep_model = CNNDeep().to(DEVICE)
+cnn_deep_params = count_parameters(cnn_deep_model)
 
-# Evaluación
-print("\nEvaluando CNN...")
-cnn_model.eval()
-test_loss = 0
-correct = 0
-total = 0
+print(f"\nParámetros: {cnn_deep_params:,}")
+print("Entrenando...")
 
-with torch.no_grad():
-    for data, target in test_loader:
-        data, target = data.to(DEVICE), target.to(DEVICE)
-        output = cnn_model(data)
-        test_loss += cnn_criterion(output, target).item()
-        _, predicted = output.max(1)
-        total += target.size(0)
-        correct += predicted.eq(target).sum().item()
+cnn_deep_start = time.time()
+train_pytorch_model(cnn_deep_model, train_loader, EPOCHS, LEARNING_RATE)
+cnn_deep_train_time = time.time() - cnn_deep_start
 
-cnn_test_acc = 100. * correct / total
-cnn_test_loss = test_loss / len(test_loader)
+cnn_deep_accuracy = evaluate_pytorch_model(cnn_deep_model, test_loader)
 
-print(f"\nResultados CNN:")
-print(f"  Test Accuracy: {cnn_test_acc:.2f}%")
-print(f"  Test Loss: {cnn_test_loss:.4f}")
-print(f"  Training Time: {cnn_train_time:.1f}s")
+print(f"\nResultados:")
+print(f"  Test Accuracy: {cnn_deep_accuracy:.2f}%")
+print(f"  Training Time: {cnn_deep_train_time:.1f}s")
 
 # ============================================================================
-# MODELO 3: PCA + Linear SVM (Clásico)
+# CALCULAR AIC, BIC Y FIC PARA TODOS LOS MODELOS
 # ============================================================================
 
-print("\n" + "="*80)
-print("MODELO 3: PCA + Linear SVM (Clásico)")
-print("="*80)
-print("\nCaracterísticas:")
-print("  Reducción dim: PCA (784 -> 150 componentes)")
-print("  Clasificador: Linear SVM (C=1.0)")
-
-# Preparar datos para SVM (píxeles crudos)
-print("\nPreparando datos...")
-
-# Usar los datos ya normalizados
-X_train_flat = X_train  # Ya está en forma (60000, 784)
-X_test_flat = X_test    # Ya está en forma (10000, 784)
-
-svm_start_time = time.time()
-
-# Aplicar PCA para reducir dimensionalidad
-print("\nAplicando PCA (784 -> 150 dimensiones)...")
-pca = PCA(n_components=150, random_state=42)
-X_train_pca = pca.fit_transform(X_train_flat)
-X_test_pca = pca.transform(X_test_flat)
-
-explained_var = pca.explained_variance_ratio_.sum()
-print(f"Varianza explicada: {explained_var*100:.2f}%")
-
-# Escalar características
-scaler = StandardScaler()
-X_train_pca_scaled = scaler.fit_transform(X_train_pca)
-X_test_pca_scaled = scaler.transform(X_test_pca)
-
-# Entrenar SVM
-print("\nEntrenando Linear SVM...")
-svm_model = LinearSVC(C=1.0, max_iter=1000, random_state=42, verbose=1)
-svm_model.fit(X_train_pca_scaled, y_train)
-
-svm_train_time = time.time() - svm_start_time
-
-# Evaluar
-print("\nEvaluando SVM...")
-svm_predictions = svm_model.predict(X_test_pca_scaled)
-svm_test_acc = 100. * np.mean(svm_predictions == y_test)
-
-print(f"\nResultados SVM:")
-print(f"  Test Accuracy: {svm_test_acc:.2f}%")
-print(f"  Training Time: {svm_train_time:.1f}s")
-print(f"  PCA componentes: {X_train_pca.shape[1]}")
-print(f"  Varianza capturada: {explained_var*100:.1f}%")
-
-# ============================================================================
-# RESUMEN COMPARATIVO
-# ============================================================================
-
-print("\n" + "="*80)
-print("RESUMEN COMPARATIVO")
-print("="*80)
-
-print(f"\n{'Modelo':<15} {'Parámetros':<15} {'Test Acc':<12} {'Train Time':<15}")
-print("-" * 60)
-print(f"{'MLP':<15} {mlp_params:<15,} {mlp_test_acc:<12.2f}% {mlp_train_time:<15.1f}s")
-print(f"{'CNN':<15} {cnn_params:<15,} {cnn_test_acc:<12.2f}% {cnn_train_time:<15.1f}s")
-print(f"{'PCA+SVM':<15} {X_train_pca.shape[1]:<15} {svm_test_acc:<12.2f}% {svm_train_time:<15.1f}s")
-
-# ============================================================================
-# CALCULAR AIC, BIC Y FIC
-# ============================================================================
-
-print("\n" + "="*80)
+print("\n" + "="*100)
 print("CALCULANDO CRITERIOS DE INFORMACIÓN: AIC, BIC, FIC")
-print("="*80)
-print("\nConfiguración del FIC:")
-print("  α = 5.0   (peso de penalización de FLOPs - aumentado)")
-print("  β = 0.5   (peso de penalización de parámetros - reducido)")
-print("  λ = 0.3   (30% log, 70% lineal - sensible a diferencias absolutas)")
-print("\n  Objetivo: Priorizar eficiencia computacional cuando accuracy es similar")
+print("="*100)
 
 from flop_counter import FlopInformationCriterion, count_model_flops
 
-# Configurar FIC con más peso en FLOPs
-# α=5.0: Mayor penalización de FLOPs (vs α=2.0 estándar)
-# λ=0.3: 30% logarítmico, 70% lineal (más sensible a diferencias absolutas)
-# β=0.5: Menor peso en parámetros (para que FLOPs dominen más)
-OPTIMAL_LAMBDA = 0.3
-ALPHA = 10.0
-BETA = 0.5
+# ============================================================================
+# CONFIGURACIÓN FIC - AJUSTAR ESTOS PARÁMETROS
+# ============================================================================
+
+print("\n" + "-"*100)
+print("CONFIGURACIÓN DE PARÁMETROS FIC")
+print("-"*100)
+
+# Parámetros ajustables del FIC
+FIC_VARIANT = 'custom'  # Opciones: 'deployment', 'research', 'balanced', 'custom'
+FIC_ALPHA = 5.0         # Peso del término de FLOPs (mayor = penaliza más FLOPs)
+FIC_BETA = 0.5          # Peso del término de parámetros (mayor = penaliza más params)
+FIC_LAMBDA = 0.3        # Balance entre términos (0=solo FLOPs, 1=solo params)
+
+print(f"\nParámetros FIC configurados:")
+print(f"  Variant:        {FIC_VARIANT}")
+print(f"  Alpha (FLOPs):  {FIC_ALPHA}")
+print(f"  Beta (Params):  {FIC_BETA}")
+print(f"  Lambda (Balance): {FIC_LAMBDA}")
+
+print("\n💡 Guía de ajuste:")
+print("  • ALPHA alto → Penaliza fuertemente modelos con muchos FLOPs")
+print("  • BETA alto → Penaliza fuertemente modelos con muchos parámetros")
+print("  • LAMBDA cercano a 0 → Prioriza eficiencia en FLOPs")
+print("  • LAMBDA cercano a 1 → Prioriza parsimonia en parámetros")
+print("\nEjemplos de configuraciones:")
+print("  Deployment (edge):   alpha=10.0, beta=1.0, lambda=0.2")
+print("  Research:            alpha=1.0, beta=2.0, lambda=0.7")
+print("  Balanced:            alpha=5.0, beta=0.5, lambda=0.3")
+
+# Configurar FIC con parámetros personalizados
 fic_calculator = FlopInformationCriterion(
-    variant='custom',
-    alpha=ALPHA,  # Penaliza más los FLOPs
-    beta=BETA,   # Menos peso a parámetros
-    flops_scale=f'parametric_log_linear_{OPTIMAL_LAMBDA}'
+    variant=FIC_VARIANT,
+    alpha=FIC_ALPHA,
+    beta=FIC_BETA,
+    lambda_balance=FIC_LAMBDA
 )
 
+# ============================================================================
+# FUNCIONES DE CÁLCULO
+# ============================================================================
+
 def calculate_aic(log_likelihood, k):
-    """AIC = -2*log(L) + 2*k"""
+    """AIC = 2k - 2ln(L) = log_likelihood + 2k"""
     return log_likelihood + 2 * k
 
 def calculate_bic(log_likelihood, k, n):
-    """BIC = -2*log(L) + k*log(n)"""
+    """BIC = k*ln(n) - 2ln(L) = log_likelihood + k*ln(n)"""
     return log_likelihood + k * np.log(n)
 
 def calculate_log_likelihood_pytorch(model, data_loader, device):
-    """Calcula -2*log(L) para modelo PyTorch"""
+    """Calcula log-likelihood negativa para modelos PyTorch"""
     model.eval()
     criterion = nn.CrossEntropyLoss(reduction='sum')
     total_loss = 0
-    n_samples = 0
     
     with torch.no_grad():
         for data, target in data_loader:
             data, target = data.to(device), target.to(device)
             output = model(data)
             total_loss += criterion(output, target).item()
-            n_samples += len(target)
     
-    # -2*log(L) = 2 * CrossEntropyLoss (sum)
     return total_loss
 
-def calculate_log_likelihood_svm(model, X, y):
-    """Calcula -2*log(L) para SVM (aproximación usando hinge loss)"""
-    # Decision function da scores sin calibrar
-    decision_scores = model.decision_function(X)
+def calculate_log_likelihood_sklearn(predictions, y_true, n_classes=10):
+    """Aproximación de log-likelihood para modelos sklearn"""
+    correct = (predictions == y_true).astype(float)
+    # Probabilidades: alta si correcto, baja si incorrecto
+    probs = np.where(correct == 1, 0.99, 0.01/(n_classes-1))
+    return -2 * np.sum(np.log(probs + 1e-10))
+
+# ============================================================================
+# EVALUAR MODELOS SKLEARN
+# ============================================================================
+
+all_results = {}
+
+print("\n" + "="*100)
+print("EVALUANDO MODELOS SKLEARN")
+print("="*100)
+
+sklearn_models = [
+    ("Logistic Regression", logreg_predictions, logreg_params, logreg_accuracy, logreg_train_time),
+    ("KNN (k=5)", knn_predictions, knn_params if knn_params > 0 else 100, knn_accuracy, knn_train_time),
+    ("Random Forest", rf_predictions, rf_params, rf_accuracy, rf_train_time),
+    ("PCA+SVM", pca_svm_predictions, pca_svm_params, pca_svm_accuracy, pca_svm_train_time),
+]
+
+for name, predictions, n_params, accuracy, train_time in sklearn_models:
+    print(f"\n[sklearn] {name}...")
     
-    # Convertir a probabilidades usando softmax
-    exp_scores = np.exp(decision_scores - np.max(decision_scores, axis=1, keepdims=True))
-    probs = exp_scores / np.sum(exp_scores, axis=1, keepdims=True)
+    # Calcular log-likelihood
+    log_lik = calculate_log_likelihood_sklearn(predictions, y_test)
     
-    # Cross-entropy
-    y_int = y.astype(int)
-    log_likelihood = -2 * np.sum(np.log(probs[np.arange(len(y)), y_int] + 1e-10))
+    # Calcular AIC y BIC
+    aic = calculate_aic(log_lik, n_params)
+    bic = calculate_bic(log_lik, n_params, len(y_test))
     
-    return log_likelihood
-
-print("\nCalculando métricas para cada modelo...")
-
-# ---------------------------
-# MLP
-# ---------------------------
-print("\n[1/3] MLP...")
-
-# Log-likelihood
-mlp_log_lik = calculate_log_likelihood_pytorch(mlp_model, test_loader, DEVICE)
-n_test = len(test_dataset)
-
-# AIC y BIC
-mlp_aic = calculate_aic(mlp_log_lik, mlp_params)
-mlp_bic = calculate_bic(mlp_log_lik, mlp_params, n_test)
-
-# FIC - necesitamos contar FLOPs
-print("  Contando FLOPs del MLP...")
-sample_input = X_test_torch[:1].to(DEVICE)  # Una muestra para profiling
-try:
-    mlp_flops_result = count_model_flops(
-        model=mlp_model,
-        input_data=sample_input,
-        framework='torch',
-        verbose=False
+    # Estimar FLOPs según el tipo de modelo
+    if "Logistic" in name:
+        flops = 784 * 10 * 2  # matmul input->output
+    elif "KNN" in name:
+        flops = 784 * len(y_test) * 5  # distance calculations
+    elif "Forest" in name:
+        flops = rf_params * 10  # traversals aproximados
+    elif "SVM" in name:
+        flops = 150 * 10 * 2 + 784 * 150  # PCA transform + SVM
+    else:
+        flops = 0
+    
+    # Calcular FIC con parámetros configurados
+    fic_result = fic_calculator.calculate_fic(
+        log_likelihood=log_lik,
+        flops=flops,
+        n_params=n_params,
+        n_samples=len(y_test)
     )
-    mlp_flops = mlp_flops_result['total_flops']
-    print(f"  FLOPs por muestra: {mlp_flops:,}")
-except Exception as e:
-    print(f"  Advertencia: No se pudieron contar FLOPs: {e}")
-    mlp_flops = 0
+    
+    # Mostrar desglose del FIC
+    print(f"  Log-likelihood: {log_lik:,.0f}")
+    print(f"  Params: {n_params:,}")
+    print(f"  FLOPs: {flops:,}")
+    print(f"  AIC: {aic:,.0f}")
+    print(f"  BIC: {bic:,.0f}")
+    print(f"  FIC: {fic_result['fic']:,.0f}")
+    print(f"    └─ FLOPs term: {fic_result.get('flops_term', 0):,.0f}")
+    print(f"    └─ Params term: {fic_result.get('params_term', 0):,.0f}")
+    
+    all_results[name] = {
+        'accuracy': accuracy,
+        'params': n_params,
+        'flops': flops,
+        'train_time': train_time,
+        'aic': aic,
+        'bic': bic,
+        'fic': fic_result['fic'],
+        'log_likelihood': log_lik,
+        'flops_term': fic_result.get('flops_term', 0),
+        'params_term': fic_result.get('params_term', 0)
+    }
 
-# Calcular FIC
-mlp_fic_result = fic_calculator.calculate_fic(
-    log_likelihood=mlp_log_lik,
-    flops=mlp_flops,
-    n_params=mlp_params,
-    n_samples=n_test
-)
-mlp_fic = mlp_fic_result['fic']
+# ============================================================================
+# EVALUAR MODELOS PYTORCH
+# ============================================================================
 
-# ---------------------------
-# CNN
-# ---------------------------
-print("\n[2/3] CNN...")
+print("\n" + "="*100)
+print("EVALUANDO MODELOS PYTORCH")
+print("="*100)
 
-# Log-likelihood
-cnn_log_lik = calculate_log_likelihood_pytorch(cnn_model, test_loader, DEVICE)
+pytorch_models = [
+    ("MLP Tiny", mlp_tiny_model, mlp_tiny_params, mlp_tiny_accuracy, mlp_tiny_train_time),
+    ("MLP Medium", mlp_medium_model, mlp_medium_params, mlp_medium_accuracy, mlp_medium_train_time),
+    ("MLP Large", mlp_large_model, mlp_large_params, mlp_large_accuracy, mlp_large_train_time),
+    ("CNN Tiny", cnn_tiny_model, cnn_tiny_params, cnn_tiny_accuracy, cnn_tiny_train_time),
+    ("CNN Medium", cnn_medium_model, cnn_medium_params, cnn_medium_accuracy, cnn_medium_train_time),
+    ("CNN Deep", cnn_deep_model, cnn_deep_params, cnn_deep_accuracy, cnn_deep_train_time),
+]
 
-# AIC y BIC
-cnn_aic = calculate_aic(cnn_log_lik, cnn_params)
-cnn_bic = calculate_bic(cnn_log_lik, cnn_params, n_test)
-
-# FIC - contar FLOPs
-print("  Contando FLOPs de la CNN...")
-try:
-    cnn_flops_result = count_model_flops(
-        model=cnn_model,
-        input_data=sample_input,
-        framework='torch',
-        verbose=False
+for name, model, n_params, accuracy, train_time in pytorch_models:
+    print(f"\n[PyTorch] {name}...")
+    
+    # Calcular log-likelihood
+    log_lik = calculate_log_likelihood_pytorch(model, test_loader, DEVICE)
+    
+    # Calcular AIC y BIC
+    aic = calculate_aic(log_lik, n_params)
+    bic = calculate_bic(log_lik, n_params, len(y_test))
+    
+    # Contar FLOPs reales
+    sample_input = X_test_torch[:1].to(DEVICE)
+    try:
+        flops_result = count_model_flops(
+            model=model,
+            input_data=sample_input,
+            framework='torch',
+            verbose=False
+        )
+        flops = flops_result['total_flops']
+    except Exception as e:
+        print(f"  ⚠️  Warning: No se pudieron contar FLOPs: {e}")
+        flops = 0
+    
+    # Calcular FIC con parámetros configurados
+    fic_result = fic_calculator.calculate_fic(
+        log_likelihood=log_lik,
+        flops=flops,
+        n_params=n_params,
+        n_samples=len(y_test)
     )
-    cnn_flops = cnn_flops_result['total_flops']
-    print(f"  FLOPs por muestra: {cnn_flops:,}")
-except Exception as e:
-    print(f"  Advertencia: No se pudieron contar FLOPs: {e}")
-    cnn_flops = 0
-
-# Calcular FIC
-cnn_fic_result = fic_calculator.calculate_fic(
-    log_likelihood=cnn_log_lik,
-    flops=cnn_flops,
-    n_params=cnn_params,
-    n_samples=n_test
-)
-cnn_fic = cnn_fic_result['fic']
-
-# ---------------------------
-# PCA+SVM
-# ---------------------------
-print("\n[3/3] PCA+SVM...")
-
-# Log-likelihood (aproximación)
-svm_log_lik = calculate_log_likelihood_svm(svm_model, X_test_pca_scaled, y_test)
-
-# "Parámetros efectivos" del SVM: coeficientes de decisión
-# LinearSVC con 10 clases tiene 10 vectores de coeficientes
-svm_params = svm_model.coef_.size + svm_model.intercept_.size
-
-# AIC y BIC
-svm_aic = calculate_aic(svm_log_lik, svm_params)
-svm_bic = calculate_bic(svm_log_lik, svm_params, n_test)
-
-# FIC - SVM no tiene "FLOPs" en el sentido tradicional
-# Estimamos operaciones: PCA transform + dot products
-pca_ops = X_test_pca.shape[1] * X_test_flat.shape[1]  # 150 * 784
-svm_ops = X_test_pca.shape[1] * svm_model.coef_.shape[0]  # 150 * 10
-svm_flops = pca_ops + svm_ops  # Aproximación conservadora
-
-print(f"  FLOPs estimados por muestra: {svm_flops:,}")
-
-# Calcular FIC
-svm_fic_result = fic_calculator.calculate_fic(
-    log_likelihood=svm_log_lik,
-    flops=svm_flops,
-    n_params=svm_params,
-    n_samples=n_test
-)
-svm_fic = svm_fic_result['fic']
+    
+    # Mostrar desglose del FIC
+    print(f"  Log-likelihood: {log_lik:,.0f}")
+    print(f"  Params: {n_params:,}")
+    print(f"  FLOPs: {flops:,}")
+    print(f"  AIC: {aic:,.0f}")
+    print(f"  BIC: {bic:,.0f}")
+    print(f"  FIC: {fic_result['fic']:,.0f}")
+    print(f"    └─ FLOPs term: {fic_result.get('flops_term', 0):,.0f}")
+    print(f"    └─ Params term: {fic_result.get('params_term', 0):,.0f}")
+    
+    all_results[name] = {
+        'accuracy': accuracy,
+        'params': n_params,
+        'flops': flops,
+        'train_time': train_time,
+        'aic': aic,
+        'bic': bic,
+        'fic': fic_result['fic'],
+        'log_likelihood': log_lik,
+        'flops_term': fic_result.get('flops_term', 0),
+        'params_term': fic_result.get('params_term', 0)
+    }
 
 # ============================================================================
 # TABLA COMPARATIVA FINAL
 # ============================================================================
 
-print("\n" + "="*80)
-print("COMPARACIÓN DE CRITERIOS DE INFORMACIÓN")
-print("="*80)
+print("\n" + "="*100)
+print("TABLA COMPARATIVA COMPLETA: 10 ENFOQUES")
+print("="*100)
 
-print(f"\n{'Modelo':<15} {'Params':<12} {'FLOPs':<15} {'AIC':<15} {'BIC':<15} {'FIC':<15}")
-print("-" * 87)
-print(f"{'MLP':<15} {mlp_params:<12,} {mlp_flops:<15,} {mlp_aic:<15.2f} {mlp_bic:<15.2f} {mlp_fic:<15.2f}")
-print(f"{'CNN':<15} {cnn_params:<12,} {cnn_flops:<15,} {cnn_aic:<15.2f} {cnn_bic:<15.2f} {cnn_fic:<15.2f}")
-print(f"{'PCA+SVM':<15} {svm_params:<12,} {svm_flops:<15,} {svm_aic:<15.2f} {svm_bic:<15.2f} {svm_fic:<15.2f}")
+print(f"\n{'Modelo':<25} {'Acc%':<8} {'Params':<12} {'FLOPs':<15} {'Time(s)':<10} {'AIC':<12} {'BIC':<12} {'FIC':<12}")
+print("-" * 120)
 
-# Determinar ganadores
-print("\n" + "="*80)
-print("MODELOS SELECCIONADOS POR CADA CRITERIO")
-print("="*80)
-
-models = {'MLP': (mlp_aic, mlp_bic, mlp_fic, mlp_test_acc, mlp_flops),
-          'CNN': (cnn_aic, cnn_bic, cnn_fic, cnn_test_acc, cnn_flops),
-          'PCA+SVM': (svm_aic, svm_bic, svm_fic, svm_test_acc, svm_flops)}
-
-aic_winner = min(models.items(), key=lambda x: x[1][0])
-bic_winner = min(models.items(), key=lambda x: x[1][1])
-fic_winner = min(models.items(), key=lambda x: x[1][2])
-
-print(f"\n{'Criterio':<15} {'Modelo Seleccionado':<20} {'Valor':<15} {'Razón':<40}")
-print("-" * 90)
-print(f"{'AIC':<15} {aic_winner[0]:<20} {aic_winner[1][0]:<15.2f} {'Minimiza params + ajuste':<40}")
-print(f"{'BIC':<15} {bic_winner[0]:<20} {bic_winner[1][1]:<15.2f} {'Penaliza más los params':<40}")
-print(f"{'FIC':<15} {fic_winner[0]:<20} {fic_winner[1][2]:<15.2f} {'Considera params + FLOPs + ajuste':<40}")
-
-# Análisis de diferencias
-print("\n" + "="*80)
-print("ANÁLISIS: ¿Por qué cada criterio prefiere diferente modelo?")
-print("="*80)
-
-print(f"""
-AIC selecciona: {aic_winner[0]}
-  → Penaliza solo 2*k (# parámetros)
-  → Ignora costo computacional (FLOPs)
-  → {aic_winner[0]} tiene {aic_winner[1][3]:.2f}% accuracy
-  
-BIC selecciona: {bic_winner[0]}
-  → Penaliza k*log(n) - más estricto que AIC
-  → Favorece modelos más simples
-  → También ignora FLOPs completamente
-  → {bic_winner[0]} tiene {bic_winner[1][3]:.2f}% accuracy
-
-FIC selecciona: {fic_winner[0]} (α=5.0, β=0.5, λ=0.3)
-  → Penaliza FUERTEMENTE los FLOPs
-  → También considera parámetros (pero con menos peso)
-  → Balance entre precisión y eficiencia computacional
-  → {fic_winner[0]} tiene {fic_winner[1][3]:.2f}% accuracy con {fic_winner[1][4]:,} FLOPs
-  
-Trade-off detectado por FIC:
-  CNN: {cnn_test_acc:.2f}% acc, {cnn_flops:,} FLOPs
-  MLP: {mlp_test_acc:.2f}% acc, {mlp_flops:,} FLOPs
-  → Diferencia accuracy: {cnn_test_acc - mlp_test_acc:.2f}%
-  → Diferencia FLOPs: {(cnn_flops / mlp_flops):.1f}x más costoso
-  → ¿Vale la pena {(cnn_flops / mlp_flops):.1f}x más FLOPs por {cnn_test_acc - mlp_test_acc:.2f}% mejor?
-  → FIC dice: {"SÍ" if fic_winner[0] == "CNN" else "NO"}
-""")
-
-# Recomendación final
-print("="*80)
-print("RECOMENDACIÓN SEGÚN CONTEXTO")
-print("="*80)
-
-print("""
-📱 MÓVIL/EDGE (recursos limitados):
-   → Usar FIC para seleccionar modelo
-   → FLOPs son críticos para latencia y batería
-   → Con α=5.0, FIC penaliza fuertemente modelos costosos
-   
-🖥️  SERVIDOR (recursos abundantes):
-   → AIC/BIC suficientes si solo importa precisión
-   → FLOPs menos relevantes, priorizar accuracy
-   
-⚖️  PRODUCCIÓN BALANCEADA (nuestra configuración):
-   → FIC con α=5.0, β=0.5, λ=0.3
-   → Penaliza modelos ineficientes
-   → Prefiere MLP si CNN no ofrece mejora sustancial
-   → Ideal: CNN debe ser >2% mejor para justificar 14x FLOPs
-
-💡 AJUSTAR SENSIBILIDAD:
-   α más alto (7.0-10.0) → Penaliza AÚN MÁS los FLOPs
-   λ más bajo (0.1-0.2)  → Más sensible a diferencias absolutas
-   β más bajo (0.1-0.3)  → Ignora casi completamente los parámetros
-""")
-
-print("\n" + "="*80)
-print("VERIFICACIÓN Y EVALUACIÓN COMPLETADOS")
-print("="*80)
-print("\nLos 3 modelos han sido entrenados y evaluados con AIC, BIC y FIC")
-print("\n💡 Observaciones clave:")
-print("  - AIC/BIC ignoran FLOPs completamente")
-print("  - FIC considera el costo computacional real")
-print("  - Diferentes criterios pueden seleccionar diferentes modelos")
-print("  - La elección depende del contexto de deployment")
+for name in sorted(all_results.keys(), key=lambda x: all_results[x]['fic']):
+    r = all_results[name]
+    print(f"{name:<25} {r['accuracy']:<8.2f} {r['params']:<12,} {r['flops']:<15,} "
+          f"{r['train_time']:<10.1f} {r['aic']:<12.0f} {r['bic']:<12.0f} {r['fic']:<12.0f}")
