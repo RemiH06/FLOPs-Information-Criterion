@@ -23,6 +23,9 @@ The final version is a library made with only python implementing a not so huge 
 - pip library has not been made yet
 ```
 
+## NEXT STEPS
+- NAS based on RIC (Remi Information Criterion) and descent gradient
+
 ## Installation
 
 1. Here I'll place the installation guide, will turn it into a pip package when I find the time.
